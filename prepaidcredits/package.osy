@@ -1,0 +1,19 @@
+// Osysharp.OfferSales.PrepaidCredits — a pack of prepaid credits is something Osysharp.OfferSales sells: a ten-class card,
+// five hours of studio time. Paid, the buyer's pack (or the pack of whoever they bought for) is granted — once,
+// whichever way the money arrived; refunded in full, it is voided.
+//
+// ⚑ A BRIDGE, SO NEITHER KIT DEPENDS ON THE OTHER: an app using both writes nothing but its offers — it arrives by
+//   itself (`completes` below — `osy lock` includes it and says so).
+// ⚑ THE GRANT IS IDEMPOTENT PER PURCHASE: the pack's reference is the purchase's (`purchase:<reference>`), so however
+//   often a payment is reported, one pack is granted, and a refund finds exactly that pack.
+package Osysharp.OfferSales.PrepaidCredits {
+  version     "0.1.0";
+  minPlatform "0.9.0";
+  summary     "a pack of Osysharp.PrepaidCredits as an Osysharp.OfferSales offer — credits, a scope and a validity — granted to whoever it was bought for once it is paid, and voided when it is refunded in full.";
+  completes   Osysharp.OfferSales@0, Osysharp.PrepaidCredits@0;
+  model "model/*.osy";
+  use Osysharp.Identity@0;
+  use Osysharp.OfferSales@0;
+  use Osysharp.PrepaidCredits@0;
+  tests "tests";
+}

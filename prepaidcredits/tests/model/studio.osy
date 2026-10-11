@@ -1,0 +1,23 @@
+// The studio's roles and its answers to both kits.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Payments;
+using Osysharp.OfferSales;
+using Osysharp.PrepaidCredits;
+
+[Role] enum StudioRole { Authenticator, Potter, Owner }
+
+policy IsOwner => RoleGrant.Any(g => g.Member == user && g.Role == StudioRole.Owner);
+
+/// The owner sells, refunds and manages the cards.
+policy ManagesOffers => IsOwner;
+policy SellsAtCounter => IsOwner;
+policy ManagesCredits => IsOwner;
+policy SpendsCredits => IsOwner;
+
+app.Accounts = new AccountsSetup { AppName = "Kiln Street Pottery", SignupRole = StudioRole.Potter };
+app.OfferSales = new OfferSalesSetup {
+  Providers = [ new ManualPayment { Key = "transfer", Label = "Bank transfer", Instructions = "Pay to our account." } ],
+  Currency = "GBP",
+};

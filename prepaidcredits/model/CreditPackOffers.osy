@@ -1,0 +1,40 @@
+namespace Osysharp.OfferSales.PrepaidCredits;
+
+using Osysharp.Identity;
+using Osysharp.OfferSales;
+using Osysharp.PrepaidCredits;
+
+/// An offer of prepaid credits: `Credits` of them per one bought, in `Scope` ("" — the general purse), valid for
+/// `ValidDays` from the day they are paid (0 — they do not lapse). The app adds its packs as rows of this.
+public entity CreditPackOffer : Offer {
+  [Min(1), Max(10000)] int Credits = 10;
+  [Min(0), Max(3650)] int ValidDays = 0;
+  [MaxLength(60)] string Scope = "";
+
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update when ManagesOffers;
+  }
+}
+
+/// The reference a purchase's pack is granted under — what makes the grant once, and the refund find it.
+public string CreditPackReference(Purchase p) { return "purchase:" + p.Reference; }
+
+/// Paid: the credits go to whoever it was bought for — once, whatever reports the payment and however often.
+[On]
+internal void GrantPaidCreditPack(PurchasePaid e) {
+  var offer = CreditPackOffer.FirstOrDefault(o => o.Id == e.Purchase.Offer.Id);
+  if (offer == null) { return; }
+  var count = offer!.Credits * e.Purchase.Quantity;
+  DateTime? expires = offer!.ValidDays == 0 ? null : DateTime.UtcNow.AddDays(offer!.ValidDays);
+  GrantCredits(e.Purchase.For, count, e.Purchase.OfferName, expires, CreditPackReference(e.Purchase), offer!.Scope,
+               Math.Round(e.Purchase.Amount / 100m / count, 4), "Bought — receipt " + e.Purchase.Number);
+}
+
+/// Refunded in full: the pack is voided — what was left of it is gone. A part refund leaves it as it is.
+[On]
+internal void VoidRefundedCreditPack(PurchaseRefunded e) {
+  if (!e.Whole) { return; }
+  var pack = CreditPack.FirstOrDefault(p => p.Reference == CreditPackReference(e.Purchase));
+  if (pack != null) { VoidCredits(pack!, "Refunded — receipt " + e.Purchase.Number); }
+}

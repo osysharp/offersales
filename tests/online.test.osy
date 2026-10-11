@@ -1,0 +1,150 @@
+// Buying online: the ways to pay, a purchase held and paid exactly once however it is confirmed, a refusal, a lapse, a
+// transfer marked received, the provider's own event — and what the museum hands over.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Payments;
+using Osysharp.Workflow;
+using Osysharp.OfferSales;
+
+[Test(Museum)]
+void only_ready_providers_that_take_the_currency_are_offered() {
+  var choices = PaymentChoices();
+  Assert.Equal(["card", "stubborn", "transfer"], choices.Select(c => c.Key).ToList());
+  Assert.True(choices[2].IsManual);
+}
+
+[Test(Museum)]
+void a_visitor_sees_what_is_on_sale_and_nothing_switched_off_or_not_yet_on_sale() {
+  Assert.Equal(["day", "tour-10", "late"], OffersOnSale().Select(o => o.Key).ToList());
+  runas(Vera) { Assert.Equal(["day", "tour-10", "annual", "late"], OffersOnSale().Select(o => o.Key).ToList()); }
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void a_purchase_is_held_copies_the_price_and_sends_the_buyer_to_the_provider() {
+  var start = StartPurchase(Of("day"), "card", null, 2);
+  var p = Bought(start.Purchase);
+  Assert.Equal(PurchaseState.Pending, p.State);
+  Assert.Equal(2500L, p.Amount);
+  Assert.Equal(1250L, p.UnitPrice);
+  Assert.Equal("EUR", p.Currency);
+  Assert.Equal("Day ticket", p.OfferName);
+  Assert.Equal("pi-" + p.Reference, p.ProviderRef);
+  Assert.StartsWith("R-", p.Number);
+  Assert.Contains("/purchases/" + p.Reference + "/{token}", start.RedirectUrl);
+  Assert.Equal(0, HeardCount("paid"));
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void paid_is_announced_exactly_once_however_often_the_buyer_comes_back_or_the_provider_repeats_itself() {
+  var p = StartPurchase(Of("day"), "card").Purchase;
+  Assert.Equal(PurchaseState.Paid, ConfirmPurchase(p.Reference, Paid(p)).State);
+  ConfirmPurchase(p.Reference, Paid(p));
+  ConfirmPurchase(p.Reference, "anything");
+  ApplyOfferSalesEvents([ new PaymentEvent { Kind = PaymentEventKind.Paid, State = PaymentState.Paid, Reference = p.Reference, Amount = 1250 } ], "Card");
+  Assert.Equal(1, HeardCount("paid"));
+  Assert.NotNull(Bought(p).PaidAt);
+  Assert.Equal(1, Entry.Count(e => e.Reference == p.Reference));
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void a_declined_card_fails_the_purchase_once_and_it_can_still_be_paid() {
+  var p = StartPurchase(Of("day"), "card").Purchase;
+  var failed = ConfirmPurchase(p.Reference, "declined");
+  Assert.Equal(PurchaseState.Failed, failed.State);
+  Assert.Equal("The card was declined.", failed.Message);
+  ConfirmPurchase(p.Reference, "declined");
+  Assert.Equal(1, HeardCount("failed"));
+  Assert.Equal(PurchaseState.Paid, ConfirmPurchase(p.Reference, Paid(p)).State);
+  Assert.Equal(1, HeardCount("paid"));
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void not_paid_yet_leaves_it_waiting() {
+  var p = StartPurchase(Of("day"), "card").Purchase;
+  Assert.Equal(PurchaseState.Pending, ConfirmPurchase(p.Reference, "not-yet").State);
+  Assert.Equal(0, HeardCount("paid"));
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void the_providers_signed_event_pays_the_purchase_and_one_for_another_amount_does_not() {
+  var p = StartPurchase(Of("day"), "card").Purchase;
+  ApplyOfferSalesEvents([ new PaymentEvent { Kind = PaymentEventKind.Paid, State = PaymentState.Paid, Reference = p.Reference, Amount = 1 } ], "Card");
+  Assert.Equal(PurchaseState.Pending, Bought(p).State);
+  ApplyOfferSalesEvents([ new PaymentEvent { Kind = PaymentEventKind.Paid, State = PaymentState.Paid, Reference = p.Reference, Amount = 1250 } ], "Card");
+  Assert.Equal(PurchaseState.Paid, Bought(p).State);
+  Assert.Throws<ConflictException>(() => ApplyOfferSalesEvents([ new PaymentEvent { Kind = PaymentEventKind.Paid, State = PaymentState.Paid, Reference = "no-such" } ], "Card"));
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void an_unpaid_purchase_lapses_and_its_places_go_back_on_sale() {
+  var p = StartPurchase(Of("tour-10"), "card", null, 2).Purchase;
+  Assert.Equal(2, HeldOf(Of("tour-10")));
+  Workflow.Settle(p);
+  TestClock.Set(new DateTime(2026, 5, 16, 9, 31, 0));
+  Workflow.Settle(p);
+  Assert.Equal(PurchaseState.Cancelled, Bought(p).State);
+  Assert.Equal("Not paid in time.", Bought(p).Message);
+  Assert.Equal(0, HeldOf(Of("tour-10")));
+  Assert.Equal(1, HeardCount("cancelled"));
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void a_transfer_waits_for_the_desk_to_mark_it_received() {
+  var start = StartPurchase(Of("day"), "transfer");
+  Assert.Contains("IBAN", start.Instructions);
+  Assert.Equal("", start.RedirectUrl);
+  Assert.Equal(PurchaseState.Pending, ConfirmPurchase(start.Purchase.Reference, "x").State);
+  Assert.Denied(() => MarkPurchasePaid(start.Purchase));
+  runas(Fia) {
+    Assert.Equal(PurchaseState.Paid, MarkPurchasePaid(Purchase.Single(x => x.Id == start.Purchase.Id)).State);
+    MarkPurchasePaid(Purchase.Single(x => x.Id == start.Purchase.Id));
+  }
+  Assert.Equal(1, HeardCount("paid"));
+}
+
+[Test(Museum)]
+[runas(Fia)]
+void a_card_payment_is_never_marked_paid_by_hand() {
+  Purchase? p = null;
+  runas(Vera) { p = StartPurchase(Of("day"), "card").Purchase; }
+  Assert.Equal("This payment is confirmed by its provider, not by hand.",
+               Assert.Throws<ValidationException>(() => MarkPurchasePaid(Purchase.Single(x => x.Id == p!.Id))).Message);
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void a_free_offer_is_paid_the_moment_it_is_taken() {
+  var p = StartPurchase(Of("late"), "").Purchase;
+  Assert.Equal(PurchaseState.Paid, Bought(p).State);
+  Assert.Equal(0L, Bought(p).Amount);
+  Assert.Equal(1, HeardCount("paid"));
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void the_buyer_calls_an_unpaid_purchase_off_and_cannot_call_off_a_paid_one() {
+  var p = StartPurchase(Of("tour-10"), "card").Purchase;
+  Assert.Equal(PurchaseState.Cancelled, CancelPurchase(p).State);
+  Assert.Equal(0, HeldOf(Of("tour-10")));
+  var q = StartPurchase(Of("day"), "card").Purchase;
+  ConfirmPurchase(q.Reference, Paid(q));
+  Assert.Throws<ValidationException>(() => CancelPurchase(Bought(q)));
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void a_later_price_change_never_alters_a_purchase_already_made() {
+  var p = StartPurchase(Of("day"), "card").Purchase;
+  runas(Max) { var day = Of("day"); day.Price = 1500; day.Name = "Day ticket (new price)"; UnitOfWork.Commit(); }
+  Assert.Equal(1250L, Bought(p).Amount);
+  Assert.Equal("Day ticket", Bought(p).OfferName);
+  Assert.Equal(1500L, StartPurchase(Of("day"), "card").Purchase.Amount);
+}

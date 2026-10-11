@@ -1,0 +1,83 @@
+// Giving money back: in part and then the rest, each announced once, the provider asked when it took the money, and
+// what was handed over taken back on a whole refund.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.OfferSales;
+
+Purchase PaidOnline(Offer o, string provider, int quantity = 1) {
+  Purchase? p = null;
+  runas(Vera) {
+    p = StartPurchase(o, provider, null, quantity).Purchase;
+    ConfirmPurchase(p!.Reference, "paid-" + p!.Reference);
+  }
+  return Purchase.Single(x => x.Id == p!.Id);
+}
+
+[Test(Museum)]
+[runas(Max)]
+void a_part_and_then_the_rest_each_announced_once_and_the_entry_taken_back_at_the_end() {
+  var p = PaidOnline(Of("tour-10"), "card", 2);
+  var part = RefundPurchase(p, "One of them could not come", 800);
+  Assert.Equal(RefundStatus.Done, part.Status);
+  Assert.Equal("re-pi-" + p.Reference + "-800", part.RefundRef);
+  Assert.Equal(PurchaseState.PartlyRefunded, Bought(p).State);
+  Assert.Equal(2, HeldOf(Of("tour-10")));
+  Assert.Equal(1, HeardCount("partrefunded"));
+  Assert.False(Entry.Single(e => e.Reference == p.Reference).Void);
+  RefundPurchase(Bought(p), "The tour was cancelled");
+  Assert.Equal(PurchaseState.Refunded, Bought(p).State);
+  Assert.Equal(1600L, Bought(p).Refunded);
+  Assert.Equal(0, HeldOf(Of("tour-10")));
+  Assert.Equal(1, HeardCount("refunded"));
+  Assert.True(Entry.Single(e => e.Reference == p.Reference).Void);
+  Assert.Equal(2, RefundsOf(Bought(p)).Count);
+}
+
+[Test(Museum)]
+[runas(Max)]
+void more_than_is_left_nothing_paid_and_no_reason_are_refused() {
+  var p = PaidOnline(Of("day"), "card");
+  Assert.Equal("At most €12.50 is left to give back on " + p.Number + ".",
+               Assert.Throws<ValidationException>(() => RefundPurchase(p, "Too much", 5000)).Message);
+  Assert.Equal("Say why it is refunded.", Assert.Throws<ValidationException>(() => RefundPurchase(p, " ")).Message);
+  RefundPurchase(p, "Closed early");
+  Assert.Equal(p.Number + " is refunded already.", Assert.Throws<ValidationException>(() => RefundPurchase(Bought(p), "Again")).Message);
+  Purchase? waiting = null;
+  runas(Vera) { waiting = StartPurchase(Of("day"), "card").Purchase; }
+  Assert.Equal("Only a paid purchase can be refunded.", Assert.Throws<ValidationException>(() => RefundPurchase(Bought(waiting!), "Not paid")).Message);
+}
+
+[Test(Museum)]
+[runas(Max)]
+void a_provider_that_says_no_refunds_nothing() {
+  var p = PaidOnline(Of("day"), "stubborn");
+  Assert.Equal("Stubborn card did not give the money back. Nothing was refunded.",
+               Assert.Throws<ValidationException>(() => RefundPurchase(p, "Asked")).Message);
+  Assert.Equal(PurchaseState.Paid, Bought(p).State);
+  Assert.Equal(1250L, RefundableOf(Bought(p)));
+  Assert.Equal(0, HeardCount("refunded"));
+}
+
+[Test(Museum)]
+[runas(Max)]
+void cash_goes_back_by_hand_and_a_reader_payment_back_through_the_card_provider() {
+  Purchase? cash = null;
+  Purchase? tapped = null;
+  runas(Fia) {
+    cash = SellAtCounter(Of("day"), Oli, "Cash");
+    var start = StartCounterPurchase(Of("day"), Oli, "reader");
+    new Tapped { Reference = start.Purchase.Reference };
+    UnitOfWork.Commit();
+    tapped = CheckCounterPurchase(start.Purchase);
+  }
+  Assert.Equal("", RefundPurchase(Bought(cash!), "Changed their mind").RefundRef);
+  Assert.Equal("re-tap-" + tapped!.Reference + "-1250", RefundPurchase(Bought(tapped!), "Changed their mind").RefundRef);
+}
+
+[Test(Museum)]
+[runas(Fia)]
+void the_desk_does_not_refund_unless_the_museum_says_so() {
+  var p = SellAtCounter(Of("day"), Oli, "Cash");
+  Assert.Denied(() => RefundPurchase(p, "Asked"));
+}

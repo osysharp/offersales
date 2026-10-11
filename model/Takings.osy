@@ -1,0 +1,110 @@
+// Reading purchases: the caller's own, the desk's list, the takings of a period by channel and method — the end of the
+// day's count — and the CSV the books are fed from.
+
+namespace Osysharp.OfferSales;
+
+using Osysharp.Identity;
+using Osysharp.Csv;
+using Osysharp.Storage;
+
+/// The caller's purchases, and those made for them — newest first.
+public List<Purchase> MyPurchases() {
+  var me = CurrentPrincipal();
+  return Purchase.Where(p => p.Buyer == me || p.For == me).OrderByDescending(p => p.CreatedAt).Take(200).ToList();
+}
+
+/// Purchases made between `from` and `to` (inclusive days, UTC), newest first. Whoever takes payments.
+[Authorize(TakesPayments)]
+[SuppressWarning("cost-unbounded-read")]   // a period's sales, however many there are — the takings and the export read them all
+public List<Purchase> PurchasesBetween(DateOnly from, DateOnly to) {
+  var start = from.ToDateTime(new TimeOnly(0, 0));
+  var end = to.AddDays(1).ToDateTime(new TimeOnly(0, 0));
+  return Purchase.Include(p => p.Buyer).Include(p => p.For).Include(p => p.SoldBy)
+    .Where(p => p.CreatedAt >= start && p.CreatedAt < end).OrderByDescending(p => p.CreatedAt).ToList();
+}
+
+/// One line of the takings: a way the money came in.
+public class TakingsLine {
+  /// "Online · Card", "At the counter · Cash".
+  public string Way = "";
+  public int Sales;
+  public long Taken;
+  public long Refunded;
+  public long Net;
+  public string NetText = "";
+}
+
+/// What came in between `from` and `to`: by channel and method, what was taken, what went back and what is left — and
+/// the totals. Only paid purchases count; a refund counts on the day of its purchase's period.
+public class Takings {
+  public List<TakingsLine> Lines = [];
+  public int Sales;
+  public long Taken;
+  public long Refunded;
+  public long Net;
+  public int Waiting;
+  public string TakenText = "";
+  public string RefundedText = "";
+  public string NetText = "";
+}
+
+/// The takings between `from` and `to`. Whoever takes payments.
+[Authorize(TakesPayments)]
+public Takings TakingsBetween(DateOnly from, DateOnly to) {
+  var all = PurchasesBetween(from, to);
+  var paid = all.Where(p => p.State == PurchaseState.Paid || p.State == PurchaseState.PartlyRefunded || p.State == PurchaseState.Refunded).ToList();
+  var t = new Takings { Waiting = all.Count(p => p.State == PurchaseState.Pending || p.State == PurchaseState.Failed) };
+  foreach (var g in paid.GroupBy(p => p.Channel.Label + " · " + p.MethodLabel).OrderBy(g => g.Key)) {
+    var line = new TakingsLine { Way = g.Key, Sales = g.Count(), Taken = g.Sum(p => p.Amount), Refunded = g.Sum(p => p.Refunded) };
+    line.Net = line.Taken - line.Refunded;
+    line.NetText = Money(line.Net);
+    t.Lines.Add(line);
+  }
+  t.Sales = paid.Count;
+  t.Taken = t.Lines.Sum(l => l.Taken);
+  t.Refunded = t.Lines.Sum(l => l.Refunded);
+  t.Net = t.Taken - t.Refunded;
+  t.TakenText = Money(t.Taken);
+  t.RefundedText = Money(t.Refunded);
+  t.NetText = Money(t.Net);
+  return t;
+}
+
+/// The purchases between `from` and `to` as CSV, one line each — what the books are fed from.
+[Authorize(TakesPayments)]
+public string PurchasesCsv(DateOnly from, DateOnly to) {
+  var seller = App.Setting<OfferSalesSetup>().Seller;
+  List<List<string>> rows = [];
+  foreach (var p in PurchasesBetween(from, to)) {
+    rows.Add([p.Number, p.CreatedAt.ToString("yyyy-MM-dd HH:mm"), p.PaidAt == null ? "" : p.PaidAt!.Value.ToString("yyyy-MM-dd HH:mm"),
+              p.OfferName, p.Quantity.ToString(), (p.UnitPrice / 100m).ToString("0.00"), (p.Discount / 100m).ToString("0.00"),
+              (p.Amount / 100m).ToString("0.00"), (p.TaxRate / 100m).ToString("0.00"), p.Currency, p.State.Label, p.Channel.Label,
+              p.MethodLabel, (p.Refunded / 100m).ToString("0.00"), p.Buyer.DisplayName ?? "", p.For.DisplayName ?? "",
+              p.SoldBy == null ? "" : p.SoldBy!.DisplayName ?? "", seller]);
+  }
+  return WriteCsv(["receipt", "created", "paid", "offer", "quantity", "unit_price", "discount", "amount", "tax_rate_percent", "currency",
+                   "state", "channel", "method", "refunded", "buyer", "for", "sold_by", "seller"], rows);
+}
+
+/// `PurchasesCsv(from, to)` as a file, and a short-lived signed link to download it.
+[Authorize(TakesPayments)]
+public string PurchasesFileLink(DateOnly from, DateOnly to) {
+  var path = $"offer-sales/purchases-{from.ToString("yyyyMMdd")}-{to.ToString("yyyyMMdd")}-{DateTime.UtcNow.ToString("yyyyMMddHHmmss")}.csv";
+  File.WriteAllBytes(path, Text.ToBytes(PurchasesCsv(from, to)));
+  return File.SignedUrl(path);
+}
+
+// ── forgetting a person ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Remove every purchase made by or for `person`, with its refunds — a privacy erasure once the period the books are
+/// kept for has ended (Osysharp.Privacy.OfferSales calls it). Answers how many rows went.
+[Server, Authorize(RefundsPurchases)]
+[SuppressWarning("cost-unbounded-read")]   // an erasure takes every row of one person, however many there are
+public int ErasePurchasesOf(Principal person) {
+  var n = 0;
+  var ids = Purchase.Where(p => p.Buyer == person || p.For == person).Select(p => p.Id).ToList();
+  foreach (var r in PurchaseRefund.Where(r => ids.Contains(r.Purchase.Id)).ToList()) { r.Delete(); n = n + 1; }
+  foreach (var p in Purchase.Where(p => ids.Contains(p.Id)).ToList()) { p.Delete(); n = n + 1; }
+  UnitOfWork.Commit();
+  return n;
+}

@@ -1,0 +1,18 @@
+// The producer's test project for Osysharp.OfferSales — a small museum: day tickets, guided tours with a few places each,
+// an annual pass, a free late opening; visitors buy online by card or by transfer, or at the front desk in cash, on the
+// terminal or with a card reader; a parent buys a ticket for their child. Run it: `osy test kits/offer-sales/tests`.
+app OfferSalesKitTests {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+  use Osysharp.Identity@0;
+  use Osysharp.Mail@0;
+  use Osysharp.Sms@0;
+  use Osysharp.EmailTemplates@0;
+  use Osysharp.UserAccounts@1;
+  use Osysharp.Payments@0;
+  use Osysharp.Csv@0;
+  use Osysharp.OfferSales@0;
+  use Osysharp.Storage;
+  use Osysharp.Ui;
+  use Osysharp.Workflow;
+}

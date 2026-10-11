@@ -1,0 +1,124 @@
+// Selling in person: money taken by hand (cash, a terminal this app does not run), or through a provider's device — a
+// card reader, a QR code the customer scans — which the counter asks until it is paid.
+
+namespace Osysharp.OfferSales;
+
+using Osysharp.Identity;
+using Osysharp.Payments;
+using Osysharp.Storage;
+using Osysharp.Workflow;
+
+/// The ways the counter takes money: the methods it records by hand, then the providers' devices that are ready.
+public class CounterChoice {
+  public string Key = "";
+  public string Label = "";
+  /// Through a provider's device (a reader, a QR code) — the counter asks it until it is paid.
+  public bool ByDevice;
+}
+
+/// Every way the counter takes money now.
+[Authorize(SellsAtCounter)]
+public List<CounterChoice> CounterChoices() {
+  var setup = App.Setting<OfferSalesSetup>();
+  List<CounterChoice> choices = setup.CounterMethods.Select(m => new CounterChoice { Key = m, Label = m }).ToList();
+  foreach (var c in setup.CounterPayments) {
+    if (c.IsReady() && c.CounterCurrencyRefusal(setup.Currency) == "") { choices.Add(new CounterChoice { Key = c.Key, Label = c.Label, ByDevice = true }); }
+  }
+  return choices;
+}
+
+/// The price of `quantity` of `offer` after `discount` — refused, with the reason, for a discount the counter may not
+/// give (none allowed, none explained, more than the price).
+long CounterAmount(Offer offer, int quantity, long discount, string reason) {
+  var gross = offer.Price * quantity;
+  if (discount == 0) { return gross; }
+  if (!App.Setting<OfferSalesSetup>().CounterMayDiscount && !ManagesOffers) { throw new ValidationException("The counter does not take money off a price here."); }
+  if (discount < 0 || discount > gross) { throw new ValidationException("A discount is between nothing and the whole price."); }
+  if (string.IsNullOrWhiteSpace(reason)) { throw new ValidationException("Say why the price is lower."); }
+  return gross - discount;
+}
+
+/// Sell `quantity` of `offer` to `holder` across the counter with the money in hand — `method` is how ("Cash", "Card on
+/// the terminal"), one of the app's counter methods. Paid at once, sold by the caller, and announced once.
+[Server, Authorize(SellsAtCounter)]
+public Purchase SellAtCounter(Offer offer, Principal holder, string method, int quantity = 1, long discount = 0, string discountReason = "") {
+  var setup = App.Setting<OfferSalesSetup>();
+  if (!setup.CounterMethods.Contains(method)) { throw new ValidationException("The counter does not take '" + method + "'."); }
+  var refusal = OfferRefusal(offer, quantity);
+  if (refusal != "") { throw new ValidationException(refusal); }
+  var limit = PerPersonRefusal(offer, holder, quantity);
+  if (limit != "") { throw new ValidationException(limit); }
+  var amount = CounterAmount(offer, quantity, discount, discountReason);
+  var reference = NewPurchaseReference();
+  var purchase = new Purchase {
+    Buyer = holder, For = holder, Offer = offer, OfferName = offer.Name, Quantity = quantity, UnitPrice = offer.Price,
+    Discount = discount, DiscountReason = discountReason.Trim(), Amount = amount, TaxRate = offer.TaxRate, Currency = setup.Currency,
+    Channel = PurchaseChannel.Counter, ProviderKey = "counter", MethodLabel = method, Reference = reference,
+    SoldBy = CurrentPrincipal(), LapsesAt = DateTime.UtcNow.AddMinutes(setup.HoldMinutes),
+  };
+  HoldPlaces(offer, quantity);
+  UnitOfWork.Commit();
+  PurchaseLife.CorrelatePaymentReported(reference, amount, "", method);
+  return Purchase.Single(p => p.Reference == reference);
+}
+
+/// What the counter shows once a device payment has begun.
+public class CounterStart {
+  public Purchase Purchase = null!;
+  /// A short-lived link to the picture the customer scans with their phone — "" when there is nothing to scan.
+  public string QrUrl = "";
+  public string Instructions = "";
+}
+
+/// Begin taking `quantity` of `offer` for `holder` through the counter device `counterKey` (a reader, a QR code). The
+/// purchase waits, its places held, until `CheckCounterPurchase` hears it is paid.
+[Server, Authorize(SellsAtCounter)]
+public CounterStart StartCounterPurchase(Offer offer, Principal holder, string counterKey, int quantity = 1, long discount = 0,
+                                         string discountReason = "") {
+  var setup = App.Setting<OfferSalesSetup>();
+  var device = setup.CounterPayments.FirstOrDefault(c => c.Key == counterKey);
+  if (device == null || !device!.IsReady()) { throw new ValidationException("That way of paying at the counter is not available."); }
+  var currency = device!.CounterCurrencyRefusal(setup.Currency);
+  if (currency != "") { throw new ValidationException(currency); }
+  var refusal = OfferRefusal(offer, quantity);
+  if (refusal != "") { throw new ValidationException(refusal); }
+  var limit = PerPersonRefusal(offer, holder, quantity);
+  if (limit != "") { throw new ValidationException(limit); }
+  var amount = CounterAmount(offer, quantity, discount, discountReason);
+  var reference = NewPurchaseReference();
+  var start = device!.StartAtCounter(new PaymentRequest {
+    Reference = reference, Currency = setup.Currency, Amount = amount, IdempotencyKey = reference, Description = offer.Name,
+    Lines = [ new PaymentLine { Name = offer.Name, Quantity = quantity, UnitPrice = offer.Price, TaxRate = offer.TaxRate, Reference = offer.Key } ],
+  });
+  var purchase = new Purchase {
+    Buyer = holder, For = holder, Offer = offer, OfferName = offer.Name, Quantity = quantity, UnitPrice = offer.Price,
+    Discount = discount, DiscountReason = discountReason.Trim(), Amount = amount, TaxRate = offer.TaxRate, Currency = setup.Currency,
+    Channel = PurchaseChannel.Counter, ProviderKey = device!.Key, ProviderRef = start.ProviderRef, MethodLabel = device!.Label,
+    Reference = reference, SoldBy = CurrentPrincipal(), LapsesAt = DateTime.UtcNow.AddMinutes(setup.HoldMinutes),
+  };
+  HoldPlaces(offer, quantity);
+  var qr = "";
+  if (start.Qr != null) {
+    var path = "offer-sales/qr-" + reference + ".png";
+    File.WriteAllBytes(path, start.Qr!);
+    qr = File.SignedUrl(path);
+  }
+  UnitOfWork.Commit();
+  return new CounterStart { Purchase = purchase, QrUrl = qr, Instructions = start.Instructions };
+}
+
+/// Ask the counter device how `purchase` stands: paid moves it to Paid (once), a refusal to Failed with the device's
+/// sentence; otherwise it waits.
+[Server, Authorize(SellsAtCounter)]
+public Purchase CheckCounterPurchase(Purchase purchase) {
+  if (purchase.State != PurchaseState.Pending && purchase.State != PurchaseState.Failed) { return purchase; }
+  var device = App.Setting<OfferSalesSetup>().CounterPayments.FirstOrDefault(c => c.Key == purchase.ProviderKey);
+  if (device == null) { throw new ValidationException("That way of paying at the counter is no longer set up."); }
+  var check = device!.CheckAtCounter(purchase.Reference, purchase.Amount, purchase.ProviderRef);
+  if (check.State == PaymentState.Paid) {
+    PurchaseLife.CorrelatePaymentReported(purchase.Reference, purchase.Amount, check.ProviderRef, device!.Label);
+  } else if (check.State == PaymentState.Failed) {
+    PurchaseLife.RaiseDeclined(purchase, check.Message == "" ? "The payment did not go through." : check.Message);
+  }
+  return Purchase.Single(p => p.Id == purchase.Id);
+}

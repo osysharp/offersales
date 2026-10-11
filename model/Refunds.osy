@@ -1,0 +1,64 @@
+// Giving money back — the whole purchase or a part of it, through the provider that took it, or by hand for money
+// taken by hand — once per refund, announced once.
+
+namespace Osysharp.OfferSales;
+
+using Osysharp.Identity;
+using Osysharp.Payments;
+using Osysharp.Workflow;
+
+/// What is left to give back on `purchase` — what was paid, less every refund made or under way.
+public long RefundableOf(Purchase purchase) {
+  var asked = PurchaseRefund.Where(r => r.Purchase == purchase && r.Status != RefundStatus.Failed).Sum(r => r.Amount);
+  return Math.Max(0, purchase.Amount - asked);
+}
+
+/// The provider whose `Refund` gives back money `purchase` took: its online provider, or the online provider a counter
+/// device refunds through. Null for money taken by hand.
+IPaymentProvider? RefundsThrough(Purchase purchase) {
+  var setup = App.Setting<OfferSalesSetup>();
+  var online = setup.Providers.FirstOrDefault(p => p.Key == purchase.ProviderKey);
+  if (online != null) { return online; }
+  var device = setup.CounterPayments.FirstOrDefault(c => c.Key == purchase.ProviderKey);
+  if (device != null) { return setup.Providers.FirstOrDefault(p => p.Key == device!.RefundsThrough); }
+  return null;
+}
+
+/// Give back `amount` (minor units; 0 is all that is left) of a paid purchase, saying why. The refund is recorded
+/// before the provider is asked, so two at once cannot both ask; the provider is asked when it took the money (by hand,
+/// recording it is the whole step); the purchase becomes Refunded once all of it is back, its places on sale again.
+/// Refused, with the reason, for a purchase not paid, more than is left, or a provider that says no.
+[Server, Authorize(RefundsPurchases)]
+public PurchaseRefund RefundPurchase(Purchase purchase, string reason, long amount = 0) {
+  if (purchase.State != PurchaseState.Paid && purchase.State != PurchaseState.PartlyRefunded) {
+    throw new ValidationException(purchase.State == PurchaseState.Refunded ? purchase.Number + " is refunded already."
+                                                                           : "Only a paid purchase can be refunded.");
+  }
+  if (string.IsNullOrWhiteSpace(reason)) { throw new ValidationException("Say why it is refunded."); }
+  var left = RefundableOf(purchase);
+  var give = amount == 0 ? left : amount;
+  if (give <= 0) { throw new ValidationException(purchase.Number + " has nothing left to give back."); }
+  if (give > left) { throw new ValidationException("At most " + Money(left) + " is left to give back on " + purchase.Number + "."); }
+  var refund = new PurchaseRefund { Purchase = purchase, Sequence = PurchaseRefund.Count(r => r.Purchase == purchase) + 1, Amount = give,
+                                    Reason = reason.Trim(), By = CurrentPrincipal() };
+  UnitOfWork.Commit();
+  var provider = RefundsThrough(purchase);
+  if (provider != null && purchase.ProviderRef != "") {
+    var answer = provider!.Refund(purchase.ProviderRef, give, reason.Trim(), "refund-" + refund.Id.ToString("N"));
+    if (answer.State == RefundState.Failed) {
+      refund.Status = RefundStatus.Failed;
+      UnitOfWork.Commit();
+      throw new ValidationException(provider!.Label + " did not give the money back. Nothing was refunded.");
+    }
+    refund.RefundRef = answer.RefundRef;
+  }
+  refund.Status = RefundStatus.Done;
+  UnitOfWork.Commit();
+  PurchaseLife.RaiseRefund(purchase, refund.Id);
+  return refund;
+}
+
+/// Every refund of `purchase`, the first first.
+public List<PurchaseRefund> RefundsOf(Purchase purchase) {
+  return PurchaseRefund.Where(r => r.Purchase == purchase).OrderBy(r => r.Sequence).Take(50).ToList();
+}

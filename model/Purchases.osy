@@ -1,0 +1,233 @@
+// A purchase — one offer, some quantity, for one person — its refunds, its life from held to paid (or lapsed), and
+// what the kit tells the app.
+
+namespace Osysharp.OfferSales;
+
+using Osysharp.Identity;
+using Osysharp.Workflow;
+
+/// Where a purchase stands. ⚠ Appended, never inserted. `PurchaseLife` owns it.
+public enum PurchaseState {
+  /// Started and its places held, waiting for the money.
+  [Label("Waiting for payment")] Pending,
+  [Label("Paid")] Paid,
+  /// A payment was tried and did not go through — it may still be paid until it lapses.
+  [Label("Payment failed")] Failed,
+  /// Never paid: the buyer or the desk called it off, or it lapsed. Its places are back on sale.
+  [Label("Cancelled")] Cancelled,
+  [Label("Partly refunded")] PartlyRefunded,
+  [Label("Refunded")] Refunded,
+}
+
+/// How a purchase was made. ⚠ Appended, never inserted.
+public enum PurchaseChannel {
+  [Label("Online")] Online,
+  [Label("At the counter")] Counter,
+}
+
+/// The number on every receipt — R-000001, R-000002 …
+Counter ReceiptNumber = new() { Start = 0, Format = $"R-{Value:D6}" };
+
+/// One purchase of one offer. Made only by the kit's functions and moved only by its own life, so what was paid, for
+/// whom and at what price is never edited afterwards. Read by its buyer, by the person it is for, and by whoever takes
+/// payments.
+[SuppressWarning("cost-row-rule-asked-of-every-caller")]   // the buyer's rule is asked of everyone who buys, by design
+public entity Purchase {
+  [Counter(ReceiptNumber)] string Number;
+  /// Who pays.
+  [Required, Immutable] Principal Buyer;
+  /// Who it is for — the buyer, or somebody they buy for (a child). What is bought is handed to them.
+  [Required, Immutable] Principal For;
+  [Required, Immutable] Offer Offer;
+  /// The offer's name as sold, so history reads right after it is renamed or switched off.
+  [Required, Immutable, MaxLength(120)] string OfferName;
+  [Immutable, Min(1)] int Quantity = 1;
+  /// The price of one, as sold — minor units.
+  [Immutable, Min(0)] long UnitPrice;
+  /// What the counter took off, and why.
+  [Immutable, Min(0)] long Discount = 0;
+  [Immutable, MaxLength(200)] string DiscountReason = "";
+  /// What is paid — minor units: `UnitPrice × Quantity − Discount`.
+  [Immutable, Min(0)] long Amount;
+  [Immutable, Min(0)] long TaxRate = 0;
+  [Required, Immutable, MaxLength(3)] string Currency;
+  PurchaseState State;            // no default — PurchaseLife owns it
+  [Immutable] PurchaseChannel Channel = PurchaseChannel.Online;
+  /// The provider's key ("stripe", "desk"), a counter payment's key, or "counter" for money taken by hand.
+  [Required, Immutable, MaxLength(60)] string ProviderKey;
+  /// The provider's own id for the payment — what a refund is made against.
+  [MaxLength(200)] string ProviderRef = "";
+  /// How it was paid, as people say it — "Card", "Cash", "Bank transfer".
+  [MaxLength(80)] string MethodLabel = "";
+  /// The unguessable code a buyer returns from the provider with, and the provider's events name.
+  [Required, Unique, Immutable, MaxLength(64)] string Reference;
+  /// Who sold it, at a counter.
+  [Immutable] Principal? SoldBy;
+  [Immutable] DateTime CreatedAt = DateTime.UtcNow;
+  DateTime? PaidAt;
+  /// When an unpaid purchase lapses and its places go back on sale.
+  [Immutable] DateTime LapsesAt;
+  /// What has been given back — minor units.
+  long Refunded = 0;
+  /// The provider's last word on it (why it is not paid), or why it was cancelled.
+  [MaxLength(500)] string Message = "";
+
+  security {
+    allow read when IsAuthenticated where Buyer == user || For == user;
+    allow read when TakesPayments;
+    allow create when IsAuthenticated;
+    deny create except via StartPurchase, SellAtCounter, StartCounterPurchase;
+    // Nothing moves a purchase but its own life: no update is granted to anybody. It is removed only when a privacy
+    // erasure asks, once the books no longer need it.
+    allow delete when RefundsPurchases;
+    deny delete except via ErasePurchasesOf;
+  }
+}
+
+/// Where a refund stands. ⚠ Appended, never inserted.
+public enum RefundStatus {
+  [Label("Requested")] Requested,
+  [Label("Refunded")] Done,
+  [Label("Failed")] Failed,
+}
+
+/// One refund of a purchase — whole or a part, with the reason, who gave it and the provider's own reference. Made
+/// before the provider is asked, so two refunds at once cannot both ask.
+[Unique(Purchase, Sequence, "That purchase is being refunded already — look again before refunding it.")]
+public entity PurchaseRefund {
+  [Required, Immutable] Purchase Purchase;
+  /// 1 for a purchase's first refund, 2 for its second…
+  [Immutable, Min(1)] int Sequence;
+  [Immutable, Min(1)] long Amount;
+  [Required, Immutable, MaxLength(300)] string Reason;
+  [Immutable] Principal? By;
+  [Immutable] DateTime At = DateTime.UtcNow;
+  RefundStatus Status = RefundStatus.Requested;
+  [MaxLength(200)] string RefundRef = "";
+
+  security {
+    allow read when IsAuthenticated where Purchase.Buyer == user;
+    allow read when TakesPayments;
+    allow create, update when RefundsPurchases;
+    deny create except via RefundPurchase;
+    deny update Status, RefundRef except via RefundPurchase;
+    allow delete when RefundsPurchases;
+    deny delete except via ErasePurchasesOf;
+  }
+}
+
+// ── what the kit tells the app ──────────────────────────────────────────────────────────────────────────────────────
+
+/// A purchase was paid — exactly once, however the money arrived: the provider confirmed it, its event came in, staff
+/// marked a transfer received, or it was taken at the counter. Hand over what was bought here:
+/// `[On] void HandOver(PurchasePaid e) { … e.Purchase.For … }`.
+[Event("Purchase paid")]
+public sealed class PurchasePaid { public Purchase Purchase; }
+
+/// A payment was tried and failed. The purchase may still be paid until it lapses.
+[Event("Purchase payment failed")]
+public sealed class PurchaseFailed { public Purchase Purchase; }
+
+/// A purchase that was never paid was cancelled, or lapsed. Its places are back on sale.
+[Event("Purchase cancelled")]
+public sealed class PurchaseCancelled { public Purchase Purchase; }
+
+/// Money went back — once per refund. `Whole` when the purchase is now refunded in full: take back what was handed over.
+[Event("Purchase refunded")]
+public sealed class PurchaseRefunded { public Purchase Purchase; public PurchaseRefund Refund; public bool Whole; }
+
+// ── each purchase's life, as the system ─────────────────────────────────────────────────────────────────────────────
+
+/// ⚑ A PAYMENT FINDS ITS PURCHASE BY REFERENCE, never by reading the row. Whoever reports a payment — a provider's
+///   webhook, the buyer coming back, staff marking a transfer received — is told nothing about the purchase; the run that
+///   owns that reference checks the amount and moves it, once.
+public workflow PurchaseLife {
+  Tracks    = Purchase.State;
+  Autostart = true;
+  Initial   = Pending;
+
+  /// The money arrived — `amount` in minor units as reported (0: not said), `method` how, as people say it.
+  [CorrelateOn(this.Item.Reference == reference)]
+  event PaymentReported(string reference, long amount, string providerRef, string method);
+  /// The provider said no.
+  event Declined(string message);
+  /// The buyer or the desk calls an unpaid purchase off.
+  event Cancel(string reason);
+  /// A refund went through — its row says how much.
+  event Refund(Guid refund);
+
+  // Heard in every state and decided HERE, as the system: whoever reports a payment may not read the purchase. A report
+  // for a purchase that is not waiting — a provider repeating itself, the buyer coming back twice — changes nothing.
+  on PaymentReported(string reference, long amount, string providerRef, string method) {
+    if ((this.Item.State == PurchaseState.Pending || this.Item.State == PurchaseState.Failed)
+        && TakePurchasePayment(this.Item, amount, providerRef, method)) { goto Paid; }
+  }
+
+  state Pending {
+    Expire { Within = UntilLapse(this.Item); Accrues = false; }
+    on Expire { this.Item.Message = "Not paid in time."; goto Cancelled; }
+    on Declined(string message) { this.Item.Message = message; goto Failed; }
+    on Cancel(string reason) { this.Item.Message = reason; goto Cancelled; }
+  }
+
+  state Failed {
+    enter { Raise(new PurchaseFailed { Purchase = this.Item }); }
+    Expire { Within = UntilLapse(this.Item); Accrues = false; }
+    on Expire { this.Item.Message = "Not paid in time."; goto Cancelled; }
+    on Declined(string message) { this.Item.Message = message; }
+    on Cancel(string reason) { this.Item.Message = reason; goto Cancelled; }
+  }
+
+  state Paid {
+    enter { Raise(new PurchasePaid { Purchase = this.Item }); }
+    on Refund(Guid refund) {
+      if (ApplyRefund(this.Item, refund)) { goto Refunded; }
+      goto PartlyRefunded;
+    }
+  }
+
+  state PartlyRefunded {
+    on Refund(Guid refund) {
+      if (ApplyRefund(this.Item, refund)) { goto Refunded; }
+    }
+  }
+
+  terminal cancel Cancelled {
+    enter {
+      ReturnPlaces(this.Item.Offer, this.Item.Quantity);
+      Raise(new PurchaseCancelled { Purchase = this.Item });
+    }
+  }
+
+  terminal success Refunded { }
+}
+
+/// How long until an unpaid purchase lapses, never below zero.
+public TimeSpan UntilLapse(Purchase p) {
+  var now = DateTime.UtcNow;
+  return p.LapsesAt <= now ? TimeSpan.Zero : p.LapsesAt - now;
+}
+
+/// Records the money on `p` — true when it is the purchase's amount (or the report named none). A report for another
+/// amount is logged and ignored: only the provider's word for THIS amount pays it.
+bool TakePurchasePayment(Purchase p, long amount, string providerRef, string method) {
+  if (amount > 0 && amount != p.Amount) {
+    Log.Warning($"A payment for {p.Reference} reported {amount}, but the purchase asks for {p.Amount}.");
+    return false;
+  }
+  p.PaidAt = DateTime.UtcNow;
+  if (providerRef != "") { p.ProviderRef = providerRef; }
+  if (method != "") { p.MethodLabel = method; }
+  p.Message = "";
+  return true;
+}
+
+/// Adds refund `id` to `p`, and tells the app; true when `p` is now refunded in full (its places go back on sale).
+bool ApplyRefund(Purchase p, Guid id) {
+  var refund = PurchaseRefund.Single(r => r.Id == id);
+  p.Refunded = p.Refunded + refund.Amount;
+  var whole = p.Refunded >= p.Amount;
+  if (whole) { ReturnPlaces(p.Offer, p.Quantity); }
+  Raise(new PurchaseRefunded { Purchase = p, Refund = refund, Whole = whole });
+  return whole;
+}

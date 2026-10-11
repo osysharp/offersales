@@ -1,0 +1,101 @@
+// What the pages read — offers and purchases as lines, a receipt, and the counter's day.
+
+namespace Osysharp.OfferSales;
+
+using Osysharp.Identity;
+
+/// An offer as a card on the offers page.
+public class OfferCard {
+  public Guid Id;
+  public string Key = "";
+  public string Name = "";
+  public string Description = "";
+  public string Price = "";
+  /// "3 left", "Sold out", "" when there is no limit.
+  public string Left = "";
+  public bool SoldOut;
+  public int MaxPerPurchase = 10;
+}
+
+/// The offers on sale now, as cards — for anybody, signed in or not: a price list is public.
+[AllowAnonymous]
+public List<OfferCard> OfferCards() {
+  return OffersOnSale().Select(o => OfferCardOf(o)).ToList();
+}
+
+public OfferCard OfferCardOf(Offer o) {
+  var left = PlacesLeft(o);
+  return new OfferCard { Id = o.Id, Key = o.Key, Name = o.Name, Description = o.Description, Price = o.Price == 0 ? "Free" : Money(o.Price),
+                         Left = left == null ? "" : left == 0 ? "Sold out" : left + " left", SoldOut = left == 0,
+                         MaxPerPurchase = o.MaxPerPurchase };
+}
+
+/// A purchase as a line, and as a receipt.
+public class PurchaseLine {
+  public Guid Id;
+  public string Number = "";
+  public string What = "";
+  public string For = "";
+  public string Buyer = "";
+  public string When = "";
+  public string Amount = "";
+  public PurchaseState State = PurchaseState.Pending;
+  public string Status = "";
+  public string Method = "";
+  public string Refunded = "";
+  public string Message = "";
+  public bool CanCancel;
+  public bool CanMarkPaid;
+  public bool CanRefund;
+  /// The receipt's lines: "2 × Day ticket  €25.00", "Discount (Student)  −€2.50", "VAT 9 % included  €2.06".
+  public List<string> Receipt = [];
+}
+
+/// `p` as a line for the caller: what they may do with it, and its receipt.
+public PurchaseLine PurchaseLineOf(Purchase p) {
+  var manual = OfferSalesProvider(p.ProviderKey);
+  var line = new PurchaseLine {
+    Id = p.Id, Number = p.Number, What = (p.Quantity > 1 ? p.Quantity + " × " : "") + p.OfferName,
+    For = p.For == null ? "" : p.For.DisplayName ?? "", Buyer = p.Buyer == null ? "" : p.Buyer.DisplayName ?? "",
+    When = p.CreatedAt.ToString("d MMM yyyy, HH:mm"), Amount = Money(p.Amount), State = p.State, Status = p.State.Label,
+    Method = p.Channel.Label + " · " + p.MethodLabel, Refunded = p.Refunded > 0 ? Money(p.Refunded) + " refunded" : "",
+    Message = p.Message,
+    CanCancel = p.State == PurchaseState.Pending || p.State == PurchaseState.Failed,
+    CanMarkPaid = (p.State == PurchaseState.Pending || p.State == PurchaseState.Failed) && manual != null && manual!.IsManual && TakesPayments,
+    CanRefund = (p.State == PurchaseState.Paid || p.State == PurchaseState.PartlyRefunded) && RefundsPurchases,
+  };
+  line.Receipt.Add((p.Quantity > 1 ? p.Quantity + " × " : "") + p.OfferName + " · " + Money(p.UnitPrice * p.Quantity));
+  if (p.Discount > 0) { line.Receipt.Add("Discount" + (p.DiscountReason != "" ? " (" + p.DiscountReason + ")" : "") + " · −" + Money(p.Discount)); }
+  line.Receipt.Add("Total · " + Money(p.Amount));
+  if (p.TaxRate > 0) {
+    var tax = p.Amount - (long)Math.Round(p.Amount * 10000m / (10000m + p.TaxRate));
+    line.Receipt.Add("VAT " + (p.TaxRate / 100m).ToString("0.##") + " % included · " + Money(tax));
+  }
+  line.Receipt.Add(p.PaidAt == null ? p.State.Label : "Paid " + p.PaidAt!.Value.ToString("d MMM yyyy, HH:mm") + " · " + p.MethodLabel);
+  if (p.Refunded > 0) { line.Receipt.Add("Refunded · " + Money(p.Refunded)); }
+  return line;
+}
+
+/// The caller's purchases as lines.
+public List<PurchaseLine> MyPurchaseLines() { return MyPurchases().Select(p => PurchaseLineOf(p)).ToList(); }
+
+/// The purchases between two days as lines, for the desk.
+[Authorize(TakesPayments)]
+public List<PurchaseLine> PurchaseLinesBetween(DateOnly from, DateOnly to) {
+  return PurchasesBetween(from, to).Take(500).Select(p => PurchaseLineOf(p)).ToList();
+}
+
+/// Somebody the counter can sell to.
+public class CounterPerson {
+  public Guid Id;
+  public string Name = "";
+}
+
+/// People whose name holds `text` — at most 20 — for the counter to sell to.
+[Authorize(SellsAtCounter)]
+public List<CounterPerson> FindBuyers(string text) {
+  if (text.Trim().Length < 2) { return []; }
+  var t = text.Trim().ToLower();
+  return Principal.Where(p => p.DisplayName != null && p.DisplayName.ToLower().Contains(t)).OrderBy(p => p.DisplayName).Take(20).ToList()
+    .Select(p => new CounterPerson { Id = p.Id, Name = p.DisplayName ?? "" }).ToList();
+}

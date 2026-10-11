@@ -1,0 +1,52 @@
+// The museum's world, its people, and the helpers the tests read through.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.OfferSales;
+
+principal Vera => User.Single(u => u.Email == "vera@harbour.test");
+principal Oli => User.Single(u => u.Email == "oli@harbour.test");
+principal Fia => User.Single(u => u.Email == "fia@harbour.test");
+principal Max => User.Single(u => u.Email == "max@harbour.test");
+principal Kim => User.Single(u => u.DisplayName == "Kim Holm");
+
+User Person(string email, string name, MuseumRole role) {
+  var u = new User { Email = email, DisplayName = name, EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = u, Role = role };
+  return u;
+}
+
+/// A Saturday morning. Vera and Oli are visitors; Vera's daughter Kim is on her family card; Fia is at the front desk
+/// and Max manages. On sale: a day ticket, a guided tour with three places (two each), an annual pass for members, a
+/// free late opening; switched off: last year's ticket; not yet on sale: the summer tour.
+[TestFixture, DevSeed("A museum with tickets, a tour and a pass on sale")]
+void Museum() {
+  TestClock.Set(new DateTime(2026, 5, 16, 9, 0, 0));
+  var vera = Person("vera@harbour.test", "Vera Holm", MuseumRole.Visitor);
+  Person("oli@harbour.test", "Oli Brandt", MuseumRole.Visitor);
+  Person("fia@harbour.test", "Fia Lund", MuseumRole.FrontDesk);
+  Person("max@harbour.test", "Max Berg", MuseumRole.Manager);
+  var kim = new User { Email = "kim@managed.invalid", DisplayName = "Kim Holm" };
+  new FamilyCard { Adult = vera, Child = kim };
+  new DayTicket { Key = "day", Name = "Day ticket", Price = 1250, TaxRate = 900, SortOrder = 1, Description = "Every gallery, all day." };
+  new GuidedTour { Key = "tour-10", Name = "Guided tour, 10:00", Price = 800, SortOrder = 2, Places = 3, PerPerson = 2,
+                   StartsAt = new DateTime(2026, 5, 16, 10, 0, 0) };
+  new AnnualPass { Key = "annual", Name = "Annual pass", Price = 6000, SortOrder = 3 };
+  new DayTicket { Key = "late", Name = "Late opening", Price = 0, SortOrder = 4 };
+  new DayTicket { Key = "old", Name = "Last year's ticket", Price = 1000, Active = false };
+  new GuidedTour { Key = "summer", Name = "Summer tour", Price = 900, OnSaleFrom = new DateTime(2026, 6, 1, 0, 0, 0) };
+}
+
+Offer Of(string key) { return Offer.Single(o => o.Key == key); }
+Purchase Bought(Purchase p) { return Purchase.Single(x => x.Id == p.Id); }
+int HeardCount(string what) { Background.Settle(); return Heard.Count(h => h.Event == what); }
+string Paid(Purchase p) { return "paid-" + p.Reference; }
+
+// Direct writes, as whoever calls them — what the security tests expect to be refused.
+void WritePurchase(Offer o, Principal p) {
+  new Purchase { Buyer = p, For = p, Offer = o, OfferName = o.Name, UnitPrice = 0, Amount = 0, Currency = "EUR", ProviderKey = "x",
+                 Reference = Guid.NewGuid().ToString("N"), LapsesAt = DateTime.UtcNow.AddHours(1) };
+}
+void SetHeld(Offer o, int n) { OfferPlaces.Single(x => x.Offer == o).Held = n; }
+void SetPrice(Offer o, long price) { o.Price = price; }
+void SetRefunded(Purchase p, long amount) { p.Refunded = amount; }

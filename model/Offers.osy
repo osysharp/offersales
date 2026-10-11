@@ -1,0 +1,174 @@
+// What the app answers and configures, and the offers themselves.
+
+namespace Osysharp.OfferSales;
+
+using Osysharp.Identity;
+using Osysharp.Payments;
+
+// ── what the app answers ────────────────────────────────────────────────────────────────────────────────────────────
+
+/// THE SEAM — who looks after the offers: prices, sale windows and places, switching offers on and off — and reads every
+/// purchase. Nobody, until the app says: `policy ManagesOffers => IsManager;`.
+virtual policy ManagesOffers => false;
+
+/// THE SEAM — who sells in person: takes the money at a counter and records it, and marks a transfer or a
+/// pay-at-the-desk received. Nobody, until the app says: `policy SellsAtCounter => IsDesk;`.
+virtual policy SellsAtCounter => false;
+
+/// THE SEAM — who gives money back. Whoever manages the offers, until the app says otherwise:
+/// `policy RefundsPurchases => IsManager || IsDeskLead;`.
+virtual policy RefundsPurchases => ManagesOffers;
+
+/// Whoever may record that money has arrived, or read every purchase: the counter's sellers, the managers, and whoever
+/// refunds. Built from the seams above.
+virtual policy TakesPayments => SellsAtCounter || ManagesOffers || RefundsPurchases;
+
+/// THE SEAM — whether the caller may buy for `holder`. The caller themself, until the app widens it — a parent for a
+/// child: `policy BuysFor(Principal holder) => holder == user || ActsForDependant(holder);`.
+virtual policy BuysFor(Principal holder) => holder == user;
+
+/// THE SEAM — who a buyer may buy for, offered on the offers page beside themself. The app's classes are found, never
+/// wired: `public class Family : IOfferSalesRecipients { public List<Principal> RecipientsFor(Principal buyer) =>
+/// DependantsOf(buyer); }`. Every implementation is asked, as the buyer, and the answers merged.
+public interface IOfferSalesRecipients {
+  List<Principal> RecipientsFor(Principal buyer);
+}
+
+/// How the app sells — `app.OfferSales = new OfferSalesSetup { … }`. Every member has a working default.
+[AppSetting("OfferSales")]
+public class OfferSalesSetup {
+  /// The ways to pay online, in the order offered. Unset: pay at the desk, which staff mark received.
+  public List<IPaymentProvider> Providers = [
+    new ManualPayment { Key = "desk", Label = "Pay at the desk", Description = "Pay when you arrive; the desk marks it paid." },
+  ];
+  /// Ways to take money in person through a provider — a card reader, a QR code the customer scans
+  /// (`Osysharp.Payments`' `ICounterPayment`).
+  public List<ICounterPayment> CounterPayments = [];
+  /// Ways of paying at the counter the seller records by hand — money in hand, a terminal this app does not run.
+  public List<string> CounterMethods = ["Cash", "Card on the terminal"];
+  /// ISO 4217 — what every price is in.
+  public string Currency = "EUR";
+  /// ISO 3166 alpha-2 — where the sales are made, for providers that ask. Empty when it does not matter.
+  public string Country = "";
+  /// How long a purchase waits to be paid online before it lapses and its places go back on sale.
+  public int HoldMinutes = 30;
+  /// How long a purchase paid by transfer or at the desk waits to be marked received before it lapses.
+  public int ManualHoldDays = 7;
+  /// Whether the counter may take an amount off a price — with a reason, which is kept.
+  public bool CounterMayDiscount = true;
+  /// What the receipts and the export carry for the seller — "Riverside Lido".
+  public string Seller = "";
+}
+
+// ── the offers ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Something that can be bought: a ticket, a pass, a pack, a membership, a seat at a workshop. A DERIVABLE base — an
+/// app writes `entity GuidedTour : Offer { … }` with what its offer hands over, and restates a `security { }` block
+/// (grants are never inherited; the deny below is, so an offer off sale stays hidden from the public whatever the
+/// derived type grants). How many are held or sold is kept apart, on `OfferPlaces`, so a derived type grants nothing
+/// for it.
+public entity Offer {
+  /// A short stable code the app finds the offer by ("day-ticket"). Unique across the base and every derived type.
+  [Required, Unique("An offer with this key already exists."), MaxLength(60)] string Key;
+  [Required, MaxLength(120)] string Name;
+  [MaxLength(1000)] string Description = "";
+  /// The price in minor units (cents, öre), tax included. A purchase copies it, so changing it never alters a sale.
+  [Min(0)] long Price = 0;
+  /// The tax included in the price, in basis points (2500 is 25 %) — shown on a receipt and handed to the provider.
+  [Min(0), Max(10000)] long TaxRate = 0;
+  /// Only active offers are offered; switch one off instead of deleting it.
+  bool Active = true;
+  int SortOrder = 0;
+  /// When it goes on and comes off sale. Empty: always, while it is active.
+  DateTime? OnSaleFrom;
+  DateTime? OnSaleUntil;
+  /// How many there are to sell — the places on a tour, the tickets for a night. Empty: as many as are bought.
+  [Min(0)] int? Places;
+  /// How many one person may hold. Empty: no limit.
+  [Min(1)] int? PerPerson;
+  /// How many may be bought at once.
+  [Min(1), Max(100)] int MaxPerPurchase = 10;
+
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update when ManagesOffers;
+    // Inherited by every derived type: the public sees active offers only.
+    deny read when !ManagesOffers && !TakesPayments where !Active;
+  }
+}
+
+/// How many of an offer are held or sold — one row per offer with places, made by its first purchase. Moved only by
+/// `HoldPlaces` (a buyer's purchase, the counter's sale) and given back by the purchase's own life, never by hand; two
+/// purchases racing for the last place cannot both hold it (`[ConcurrencyCheck]`).
+[ConcurrencyCheck]
+public entity OfferPlaces {
+  [Required, Unique, Immutable] Offer Offer;
+  [Min(0)] int Held = 0;
+
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update when IsAuthenticated;
+    deny create except via HoldPlaces;
+    deny update Held except via HoldPlaces;
+  }
+}
+
+/// How many of `offer` are held or sold.
+public int HeldOf(Offer offer) {
+  var row = OfferPlaces.FirstOrDefault(x => x.Offer == offer);
+  return row == null ? 0 : row.Held;
+}
+
+/// Why `offer` cannot be bought now — "" when it can: switched off, not yet or no longer on sale, sold out.
+public string OfferRefusal(Offer offer, int quantity = 1) {
+  var now = DateTime.UtcNow;
+  if (!offer.Active) { return offer.Name + " is not on sale."; }
+  if (offer.OnSaleFrom != null && offer.OnSaleFrom > now) { return offer.Name + " goes on sale on " + offer.OnSaleFrom!.Value.ToString("d MMMM yyyy") + "."; }
+  if (offer.OnSaleUntil != null && offer.OnSaleUntil <= now) { return offer.Name + " is no longer on sale."; }
+  if (quantity < 1) { return "Choose how many."; }
+  if (quantity > offer.MaxPerPurchase) { return "At most " + offer.MaxPerPurchase + " at a time."; }
+  if (offer.Places != null) {
+    var left = offer.Places!.Value - HeldOf(offer);
+    if (left <= 0) { return offer.Name + " is sold out."; }
+    if (quantity > left) { return "Only " + left + " left of " + offer.Name + "."; }
+  }
+  return "";
+}
+
+/// How many are left of `offer`, or null when there is no limit.
+public int? PlacesLeft(Offer offer) { return offer.Places == null ? null : Math.Max(0, offer.Places!.Value - HeldOf(offer)); }
+
+/// The offers on sale now, in the seller's order (SortOrder, then name). Anyone may ask, signed in or not.
+public List<Offer> OffersOnSale() {
+  var now = DateTime.UtcNow;
+  return Offer.Where(o => o.Active && (o.OnSaleFrom == null || o.OnSaleFrom <= now) && (o.OnSaleUntil == null || o.OnSaleUntil > now))
+    .OrderBy(o => o.SortOrder).ThenBy(o => o.Name).Take(200).ToList();
+}
+
+/// "€12.50", "120 kr" — an amount in minor units in the kit's currency.
+public string Money(long minor) {
+  var currency = App.Setting<OfferSalesSetup>().Currency.ToUpper();
+  var amount = (minor / 100m).ToString("0.00");
+  if (currency == "EUR") { return "€" + amount; }
+  if (currency == "USD") { return "$" + amount; }
+  if (currency == "GBP") { return "£" + amount; }
+  if (currency == "SEK" || currency == "NOK" || currency == "DKK") { return amount + " kr"; }
+  return amount + " " + currency;
+}
+
+/// Hold `quantity` places of `offer` for a purchase — refused, with the reason, when there are not that many left.
+[Server, Authorize(IsAuthenticated)]
+internal void HoldPlaces(Offer offer, int quantity) {
+  if (offer.Places == null) { return; }
+  var row = OfferPlaces.FirstOrDefault(x => x.Offer == offer);
+  var held = row == null ? 0 : row.Held;
+  if (held + quantity > offer.Places!.Value) { throw new ValidationException(OfferRefusal(offer, quantity)); }
+  if (row == null) { new OfferPlaces { Offer = offer, Held = quantity }; } else { row.Held = held + quantity; }
+}
+
+/// Give `quantity` places of `offer` back — a purchase lapsed, was cancelled or refunded in full. Run by the purchase's
+/// own life (`PurchaseLife`), as the system.
+void ReturnPlaces(Offer offer, int quantity) {
+  var row = OfferPlaces.FirstOrDefault(x => x.Offer == offer);
+  if (row != null) { row.Held = Math.Max(0, row.Held - quantity); }
+}

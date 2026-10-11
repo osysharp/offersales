@@ -1,0 +1,86 @@
+// The front desk: money in hand, a discount with its reason, the card reader asked until the card is tapped — and the
+// day's takings by channel and method, and their export.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Workflow;
+using Osysharp.OfferSales;
+
+[Test(Museum)]
+[runas(Fia)]
+void the_desk_sells_for_cash_paid_at_once_and_sold_by_her() {
+  var p = SellAtCounter(Of("day"), Oli, "Cash", 2);
+  Assert.Equal(PurchaseState.Paid, p.State);
+  Assert.Equal(PurchaseChannel.Counter, p.Channel);
+  Assert.Equal("Cash", p.MethodLabel);
+  Assert.Equal(Fia.Id, p.SoldBy!.Id);
+  Assert.Equal(2500L, p.Amount);
+  Assert.Equal(1, HeardCount("paid"));
+}
+
+[Test(Museum)]
+[runas(Fia)]
+void a_discount_needs_a_reason_and_is_kept() {
+  Assert.Equal("Say why the price is lower.", Assert.Throws<ValidationException>(() => SellAtCounter(Of("day"), Oli, "Cash", 1, 250)).Message);
+  Assert.Equal("A discount is between nothing and the whole price.",
+               Assert.Throws<ValidationException>(() => SellAtCounter(Of("day"), Oli, "Cash", 1, 5000, "Too much")).Message);
+  var p = SellAtCounter(Of("day"), Oli, "Card on the terminal", 1, 250, "Student");
+  Assert.Equal(1000L, p.Amount);
+  Assert.Equal("Student", p.DiscountReason);
+  Assert.Equal("The counter does not take 'Cheque'.", Assert.Throws<ValidationException>(() => SellAtCounter(Of("day"), Oli, "Cheque")).Message);
+}
+
+[Test(Museum)]
+[runas(Fia)]
+void the_card_reader_is_asked_until_the_card_is_tapped() {
+  Assert.Equal(["Cash", "Card on the terminal", "reader"], CounterChoices().Select(c => c.Key).ToList());
+  var start = StartCounterPurchase(Of("annual"), Vera, "reader");
+  Assert.Equal("Tap the card on the reader.", start.Instructions);
+  Assert.Equal(PurchaseState.Pending, CheckCounterPurchase(start.Purchase).State);
+  new Tapped { Reference = start.Purchase.Reference };
+  UnitOfWork.Commit();
+  Assert.Equal(PurchaseState.Paid, CheckCounterPurchase(Bought(start.Purchase)).State);
+  CheckCounterPurchase(Bought(start.Purchase));
+  Assert.Equal(1, HeardCount("paid"));
+  Assert.Equal("Card reader", Bought(start.Purchase).MethodLabel);
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void a_visitor_cannot_sell_at_the_counter() {
+  Assert.Denied(() => SellAtCounter(Of("day"), Vera, "Cash"));
+  Assert.Denied(() => StartCounterPurchase(Of("day"), Vera, "reader"));
+}
+
+[Test(Museum)]
+[runas(Fia)]
+void the_days_takings_count_each_way_the_money_came_in_less_what_went_back() {
+  SellAtCounter(Of("day"), Oli, "Cash", 2);
+  SellAtCounter(Of("day"), Oli, "Cash");
+  var card = SellAtCounter(Of("day"), Vera, "Card on the terminal");
+  runas(Vera) {
+    var online = StartPurchase(Of("day"), "card").Purchase;
+    ConfirmPurchase(online.Reference, Paid(online));
+    StartPurchase(Of("day"), "card");                         // still waiting
+  }
+  runas(Max) { RefundPurchase(Bought(card), "Wrong ticket", 250); }
+  var t = TakingsBetween(new DateOnly(2026, 5, 16), new DateOnly(2026, 5, 16));
+  Assert.Equal(["At the counter · Card on the terminal", "At the counter · Cash", "Online · Card"], t.Lines.Select(l => l.Way).ToList());
+  Assert.Equal(3750L, t.Lines.Single(l => l.Way == "At the counter · Cash").Taken);
+  Assert.Equal(250L, t.Lines.Single(l => l.Way == "At the counter · Card on the terminal").Refunded);
+  Assert.Equal(4, t.Sales);
+  Assert.Equal(6250L, t.Taken);
+  Assert.Equal(6000L, t.Net);
+  Assert.Equal(1, t.Waiting);
+  var csv = PurchasesCsv(new DateOnly(2026, 5, 16), new DateOnly(2026, 5, 16));
+  Assert.Equal(6, csv.Trim().Split("\n").Length);
+  Assert.Contains("receipt,created,paid,offer,quantity", csv);
+  Assert.Contains("Harbour Museum", csv);
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void the_takings_are_for_the_desk_only() {
+  Assert.Denied(() => TakingsBetween(new DateOnly(2026, 5, 16), new DateOnly(2026, 5, 16)));
+  Assert.Denied(() => PurchasesCsv(new DateOnly(2026, 5, 16), new DateOnly(2026, 5, 16)));
+}

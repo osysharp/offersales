@@ -1,0 +1,544 @@
+// The kit's pages, served at its routes in every app that uses it — in the app's own shell and theme:
+//
+//     /buy                                 BuyPage               what is on sale; buy for yourself or somebody you buy for
+//     /purchases                           MyPurchasesPage       your purchases and their receipts
+//     /purchases/{reference}/{token}       PurchaseReturnPage    where a provider sends the buyer back
+//     /staff/counter                       CounterPage           sell in person
+//     /staff/sales                         SalesPage             the takings, every purchase, refunds, the export
+//     /staff/offers                        OffersPage            the offers, their prices, places and sale windows
+//
+// ⚑ AN APP TAKES ONE OVER by declaring a component of the same name — with a `[Route]` of its own it is served there
+//   instead; without one, the address is not served. The parts (`OfferPriceList`, `BuyOffers`, `MyPurchases`,
+//   `CounterSale`, `SalesDesk`, `OffersDesk`) are `[Composable]`: place them on a page of your own — `OfferPriceList`
+//   on a public landing page. Every colour, face and size is a theme token, so a look re-skins them.
+
+namespace Osysharp.OfferSales;
+
+using Osysharp.Identity;
+using Osysharp.Ui;
+
+// ── the pages ───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+[Route("/buy")] [Layout(WorkspaceFrame)] [Authorize] [Render(CSR)] [Title("Buy")]
+[Nav("Buy", Order = 40)]
+public component BuyPage() {
+  render {
+    Stack(gap: 6, w: "100%", maxW: "1000px") {
+      PageHead("Buy", subtitle: "Tickets, passes and packs — for you, or for somebody you buy for.");
+      BuyOffers();
+    }
+  }
+}
+
+[Route("/purchases")] [Layout(WorkspaceFrame)] [Authorize] [Render(CSR)] [Title("Your purchases")]
+[Nav("Your purchases", Order = 41)]
+public component MyPurchasesPage() {
+  render {
+    Stack(gap: 6, w: "100%", maxW: "1000px") {
+      PageHead("Your purchases", subtitle: "What you bought, for whom, and each receipt.");
+      MyPurchases();
+    }
+  }
+}
+
+/// Where a payment provider sends the buyer back: asks the provider how the payment stands, and says so.
+[Route("/purchases/{reference}/{token}")] [Layout(WorkspaceFrame)] [Authorize] [Render(CSR)] [Title("Your purchase")]
+public component PurchaseReturnPage(string reference, string token) {
+  PurchaseLine? line = null;
+  string problem = "";
+
+  on mount {
+    try { line = PurchaseLineOf(ConfirmPurchase(reference, token)); } catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 6, w: "100%", maxW: "720px") {
+      PageHead("Your purchase");
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      if (line != null) {
+        if (line!.State == PurchaseState.Paid) { Alert("Paid — thank you. Your receipt is below.", tone: Tone.Success); }
+        else if (line!.State == PurchaseState.Failed) { Alert(line!.Message == "" ? "The payment did not go through." : line!.Message, tone: Tone.Danger); }
+        else if (line!.State == PurchaseState.Pending) { Alert("We are waiting to hear from the payment provider. This page shows it once it is paid.", tone: Tone.Warning); }
+        PurchaseReceipt(line!);
+      }
+      Row() { TextLink("All your purchases", to: "/purchases"); }
+    }
+  }
+}
+
+[Route("/staff/counter")] [Layout(WorkspaceFrame)] [Authorize(SellsAtCounter)] [Render(CSR)] [Title("Counter")]
+[Nav("Counter", Order = 42)]
+public component CounterPage() {
+  render {
+    Stack(gap: 6, w: "100%", maxW: "1200px") {
+      PageHead("Counter", subtitle: "Sell in person, and mark a transfer or a pay-at-the-desk received.");
+      CounterSale();
+    }
+  }
+}
+
+[Route("/staff/sales")] [Layout(WorkspaceFrame)] [Authorize(TakesPayments)] [Render(CSR)] [Title("Sales")]
+[Nav("Sales", Order = 43)]
+public component SalesPage() {
+  render {
+    Stack(gap: 6, w: "100%", maxW: "1280px") {
+      PageHead("Sales", subtitle: "What came in, every purchase, refunds — and the file for the books.");
+      SalesDesk();
+    }
+  }
+}
+
+[Route("/staff/offers")] [Layout(WorkspaceFrame)] [Authorize(ManagesOffers)] [Render(CSR)] [Title("Offers")]
+public component OffersPage() {
+  render {
+    Stack(gap: 6, w: "100%", maxW: "1100px") {
+      PageHead("Offers", subtitle: "What is on sale, at what price, how many, and when.");
+      OffersDesk();
+    }
+  }
+}
+
+// ── buying ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The offers on sale as a price list — for anybody, signed in or not; a landing page places it.
+[Composable]
+[AllowAnonymous]
+public component OfferPriceList() {
+  List<OfferCard> offers = [];
+  on mount { offers = OfferCards(); }
+  render {
+    Stack(gap: 0, bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, overflow: Overflow.Hidden, role: UiRole.List, label: "Prices") {
+      foreach (var o in offers) {
+        Row(gap: 3, align: Align.Center, px: 4, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: o.Name) {
+          Stack(gap: 0, grow: 1, minW: "0") {
+            Text(o.Name, fontWeight: FontWeight.Medium);
+            if (o.Description != "") { Text(o.Description, fontSize: FontSize.Caption, color: Colors.TextMuted); }
+          }
+          if (o.Left != "") { Badge(o.Left, tone: o.SoldOut ? Tone.Danger : Tone.Ghost); }
+          Text(o.Price, fontWeight: FontWeight.Semibold);
+        }
+      }
+    }
+  }
+}
+
+/// One purchase's receipt.
+[Composable, Part]
+public component PurchaseReceipt(PurchaseLine line) {
+  render {
+    Stack(gap: 2, p: 5, bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, role: UiRole.Region, label: "Receipt " + line.Number) {
+      Row(gap: 2, align: Align.Center) {
+        Text("Receipt " + line.Number, fontWeight: FontWeight.Semibold, grow: 1);
+        Badge(line.Status, tone: line.State == PurchaseState.Paid ? Tone.Success : line.State == PurchaseState.Failed || line.State == PurchaseState.Cancelled ? Tone.Danger : Tone.Warning);
+      }
+      Text(line.When + (line.For != line.Buyer && line.For != "" ? " · for " + line.For : ""), fontSize: FontSize.Caption, color: Colors.TextMuted);
+      Divider();
+      foreach (var r in line.Receipt) { Text(r, fontSize: FontSize.Label); }
+    }
+  }
+}
+
+/// The offers on sale, each with Buy: how many, for whom (yourself, or somebody you buy for), and how to pay — then to
+/// the provider, or the instructions for a transfer. In a test: `Ui.Click("Buy", within: "Day ticket")`.
+[Composable]
+[Authorize]
+public component BuyOffers() {
+  List<OfferCard> offers = [];
+  List<PaymentChoice> ways = [];
+  List<Principal> people = [];
+  OfferCard? buying = null;
+  int quantity = 1;
+  Principal? forPerson = null;
+  PaymentChoice? way = null;
+  string problem = "";
+  PurchaseLine? done = null;
+  string instructions = "";
+
+  on mount { offers = OfferCards(); ways = PaymentChoices(); people = OfferSalesRecipients(); }
+  action Start(OfferCard o) { buying = o; quantity = 1; forPerson = people.Count > 0 ? people[0] : null; way = ways.Count > 0 ? ways[0] : null; problem = ""; }
+  action Stop() { buying = null; }
+  action Buy() {
+    problem = "";
+    if (buying!.Price != "Free" && way == null) { problem = "Choose how to pay."; return; }
+    try {
+      var start = StartPurchase(Offer.Single(o => o.Id == buying!.Id), way == null ? "" : way!.Key, forPerson, quantity);
+      if (start.RedirectUrl != "") { Navigation.Open(start.RedirectUrl, sameTab: true); return; }
+      done = PurchaseLineOf(Purchase.Single(p => p.Id == start.Purchase.Id));
+      instructions = start.Instructions;
+      buying = null;
+      offers = OfferCards();
+    } catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 5) {
+      if (done != null) {
+        Stack(gap: 3) {
+          Alert(done!.State == PurchaseState.Paid ? "It is yours — receipt " + done!.Number + "." : "Receipt " + done!.Number + " waits for your payment.",
+                tone: done!.State == PurchaseState.Paid ? Tone.Success : Tone.Warning);
+          if (instructions != "") { Box(p: 4, bg: Colors.Warning.Subtle, rounded: Radius.Md, role: UiRole.Region, label: "How to pay") { Text(instructions); } }
+        }
+      }
+      if (offers.Count == 0) { EmptyState("Nothing is on sale right now", body: "Come back soon."); }
+      Row(gap: 4, wrap: Wrapping.Wrap, align: Align.Stretch) {
+        foreach (var o in offers) {
+          Stack(gap: 2, p: 5, w: Layout.AtLeast(Tablet) ? "300px" : "100%", bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, role: UiRole.ListItem, label: o.Name) {
+            Text(o.Name, fontSize: FontSize.Heading, fontWeight: FontWeight.Semibold);
+            if (o.Description != "") { Text(o.Description, color: Colors.TextSecondary); }
+            Row(gap: 2, align: Align.Center) {
+              Text(o.Price, fontSize: FontSize.Heading, grow: 1);
+              if (o.Left != "") { Badge(o.Left, tone: o.SoldOut ? Tone.Danger : Tone.Ghost); }
+            }
+            Button(o.SoldOut ? "Sold out" : "Buy", onPress: () => Start(o), tone: Tone.Primary, disabled: o.SoldOut);
+          }
+        }
+      }
+    }
+    if (buying != null) {
+      Dialog("Buy " + buying!.Name, onDismiss: Stop, subtitle: buying!.Price + (buying!.Left != "" ? " · " + buying!.Left : "")) {
+        Box(w: "160px") { NumberField("How many", value: quantity, min: 1, max: buying!.MaxPerPurchase); }
+        if (people.Count > 1) { Dropdown("For", value: forPerson, options: people) { p => Text(p.DisplayName ?? ""); } }
+        if (buying!.Price != "Free") {
+          RadioGroup("How to pay", value: way, options: ways) { w => Text(w.Label + (w.Description != "" ? " — " + w.Description : "")); }
+        }
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        Row(gap: 2, justify: Justify.End) {
+          Button("Cancel", onPress: Stop, tone: Tone.Ghost);
+          Button(buying!.Price == "Free" ? "Take it" : "Continue to payment", onPress: Buy, tone: Tone.Primary);
+        }
+      }
+    }
+  }
+}
+
+/// The caller's purchases, each with its receipt; one not paid yet can be called off. In a test:
+/// `Ui.Click("Receipt", within: "R-000001")`.
+[Composable]
+[Authorize]
+public component MyPurchases() {
+  List<PurchaseLine> lines = [];
+  PurchaseLine? showing = null;
+  string done = "";
+  string problem = "";
+
+  on mount { Load(); }
+  action Load() { lines = MyPurchaseLines(); }
+  action Show(PurchaseLine l) { showing = l; }
+  action CallOff(PurchaseLine l) {
+    try { CancelPurchase(Purchase.Single(p => p.Id == l.Id)); done = $"{l.Number} is called off."; Load(); } catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 4) {
+      if (done != "") { Alert(done, tone: Tone.Success); }
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      PurchaseLines("Purchases", lines, "You have not bought anything yet.") { l =>
+        Row(gap: 2) {
+          Button("Receipt", onPress: () => Show(l), size: Size.Sm, tone: Tone.Ghost);
+          if (l.CanCancel) { Button("Call off", onPress: () => CallOff(l), size: Size.Sm, tone: Tone.Ghost); }
+        }
+      }
+    }
+    if (showing != null) {
+      Dialog("Receipt " + showing!.Number, onDismiss: () => { showing = null; }) { PurchaseReceipt(showing!); }
+    }
+  }
+}
+
+/// A titled list of purchases, each line with the actions the caller's template adds.
+[Composable, Part]
+public component PurchaseLines(string title, List<PurchaseLine> lines, string empty) {
+  render {
+    Stack(gap: 2) {
+      SectionLabel(title);
+      Stack(gap: 0, bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, overflow: Overflow.Hidden, role: UiRole.List, label: title) {
+        if (lines.Count == 0) { Box(p: 4) { Text(empty, color: Colors.TextMuted); } }
+        foreach (var l in lines) {
+          Row(gap: 3, align: Align.Center, wrap: Wrapping.Wrap, px: 4, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: l.Number) {
+            Stack(gap: 0, grow: 1, minW: "0") {
+              Text(l.What + " · " + l.Amount, fontWeight: FontWeight.Medium);
+              Text(l.Number + " · " + l.When + " · " + l.Method + (l.For != l.Buyer ? " · for " + l.For : "") + (l.Refunded != "" ? " · " + l.Refunded : ""),
+                   fontSize: FontSize.Caption, color: Colors.TextMuted);
+            }
+            Badge(l.Status, tone: l.State == PurchaseState.Paid ? Tone.Success : l.State == PurchaseState.Failed || l.State == PurchaseState.Cancelled ? Tone.Danger
+                               : l.State == PurchaseState.Pending ? Tone.Warning : Tone.Ghost);
+            Slot(l);
+          }
+        }
+      }
+    }
+  }
+}
+
+// ── the counter ─────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Sell in person: choose the offer, find the person, how many and how they pay — money in hand recorded at once, a
+/// reader or a QR code asked until it is paid — and the purchases waiting for a transfer or a pay-at-the-desk. In a
+/// test: `Ui.Fill("Find a person", "oli"); Ui.Click("Find"); Ui.Click("Oli Brandt", within: "People found")`.
+[Composable]
+[Authorize(SellsAtCounter)]
+public component CounterSale() {
+  List<Offer> offers = [];
+  List<CounterChoice> ways = [];
+  Offer? offer = null;
+  string search = "";
+  List<CounterPerson> found = [];
+  CounterPerson? person = null;
+  int quantity = 1;
+  CounterChoice? way = null;
+  decimal discount = 0m;
+  string reason = "";
+  string done = "";
+  string problem = "";
+  PurchaseLine? sold = null;
+  Guid waitingFor = Guid.Empty;
+  string waitingText = "";
+  string qr = "";
+  List<PurchaseLine> waiting = [];
+
+  on mount { offers = OffersOnSale(); ways = CounterChoices(); LoadWaiting(); }
+  action LoadWaiting() {
+    var today = DateOnly.FromDateTime(DateTime.UtcNow);
+    waiting = PurchaseLinesBetween(today.AddDays(-14), today).Where(l => l.CanMarkPaid).ToList();
+  }
+  action Find() { found = FindBuyers(search); }
+  action Pick(CounterPerson p) { person = p; }
+  action Sell() {
+    problem = ""; done = "";
+    if (offer == null) { problem = "Choose what they buy."; return; }
+    if (person == null) { problem = "Find who it is for."; return; }
+    if (way == null) { problem = "Choose how they pay."; return; }
+    try {
+      var o = Offer.Single(x => x.Id == offer!.Id);
+      var p = Principal.Single(x => x.Id == person!.Id);
+      if (way!.ByDevice) {
+        var start = StartCounterPurchase(o, p, way!.Key, quantity, (long)Math.Round(discount * 100m), reason);
+        waitingFor = start.Purchase.Id; waitingText = start.Instructions; qr = start.QrUrl;
+        return;
+      }
+      sold = PurchaseLineOf(SellAtCounter(o, p, way!.Key, quantity, (long)Math.Round(discount * 100m), reason));
+      done = $"Sold — receipt {sold!.Number}."; discount = 0m; reason = ""; offers = OffersOnSale();
+    } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Check() {
+    try {
+      var p = CheckCounterPurchase(Purchase.Single(x => x.Id == waitingFor));
+      if (p.State == PurchaseState.Paid) { sold = PurchaseLineOf(p); done = $"Paid — receipt {p.Number}."; waitingFor = Guid.Empty; offers = OffersOnSale(); }
+      else { waitingText = p.Message == "" ? waitingText : p.Message; }
+    } catch (Exception ex) { problem = ex.Message; }
+  }
+  action Abandon() {
+    try { CancelPurchase(Purchase.Single(x => x.Id == waitingFor), "Called off at the counter."); } catch (Exception ex) { problem = ex.Message; }
+    waitingFor = Guid.Empty;
+  }
+  action MarkPaid(PurchaseLine l) {
+    try { MarkPurchasePaid(Purchase.Single(x => x.Id == l.Id)); done = $"{l.Number} is paid."; LoadWaiting(); } catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 6) {
+      if (done != "") { Alert(done, tone: Tone.Success); }
+      if (problem != "") { Alert(problem, tone: Tone.Danger); }
+      Row(gap: 5, align: Align.Start, wrap: Wrapping.Wrap, w: "100%") {
+        Stack(gap: 4, grow: 1, minW: Layout.AtLeast(Laptop) ? "420px" : "0", w: Layout.AtLeast(Laptop) ? "auto" : "100%",
+              p: 5, bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, role: UiRole.Region, label: "Sale") {
+          Dropdown("What", value: offer, options: offers, placeholder: "Choose") { o => Text(o.Name + " · " + (o.Price / 100m).ToString("0.00")); }
+          Row(gap: 2, align: Align.End) {
+            Box(grow: 1, minW: "0") { SearchField("Find a person", value: search) { } }
+            Button("Find", onPress: Find, size: Size.Sm);
+          }
+          if (found.Count > 0) {
+            Stack(gap: 0, role: UiRole.List, label: "People found") {
+              foreach (var f in found) {
+                Pressable(onClick: () => Pick(f), label: f.Name, role: UiRole.ListItem, current: person != null && person!.Id == f.Id) {
+                  Box(px: 3, py: 2, borderBW: 1, border: Colors.Border, bg: person != null && person!.Id == f.Id ? Colors.Primary.Subtle : Colors.Surface) { Text(f.Name); }
+                }
+              }
+            }
+          }
+          if (person != null) { Text("For " + person!.Name, fontWeight: FontWeight.Medium); }
+          Row(gap: 3, wrap: Wrapping.Wrap) {
+            Box(w: "140px") { NumberField("How many", value: quantity, min: 1, max: 100); }
+            Box(w: "200px") { DecimalField("Off the price", value: discount, min: 0m); }
+            Box(grow: 1, minW: "200px") { Field("Why", value: reason, placeholder: "When something is taken off"); }
+          }
+          RadioGroup("How they pay", value: way, options: ways) { w => Text(w.Label); }
+          Row(gap: 2, justify: Justify.End) { Button("Sell", onPress: Sell, tone: Tone.Primary); }
+        }
+        Stack(gap: 4, w: Layout.AtLeast(Laptop) ? "380px" : "100%", shrink: 0) {
+          if (sold != null) { PurchaseReceipt(sold!); }
+          PurchaseLines("Waiting to be paid", waiting, "Nothing waits for a transfer or the desk.") { l =>
+            Button("Mark paid", onPress: () => MarkPaid(l), size: Size.Sm, tone: Tone.Primary);
+          }
+        }
+      }
+    }
+    if (waitingFor != Guid.Empty) {
+      Dialog("Waiting for the payment", onDismiss: Abandon, subtitle: waitingText) {
+        if (qr != "") { Image(src: qr, alt: "Code to pay", w: "240px", maxW: "100%", aspectRatio: "1 / 1"); }
+        Row(gap: 2, justify: Justify.End) {
+          Button("Call it off", onPress: Abandon, tone: Tone.Ghost);
+          Button("Check", onPress: Check, tone: Tone.Primary);
+        }
+      }
+    }
+  }
+}
+
+// ── the desk ────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The takings for a period by way the money came in, every purchase in it, a refund (whole or in part), and the CSV.
+/// In a test: `Ui.Click("Refund", within: "R-000001")`.
+[Composable]
+[Authorize(TakesPayments)]
+public component SalesDesk() {
+  DateOnly? from = null;
+  DateOnly? to = null;
+  Takings takings = new Takings();
+  List<PurchaseLine> lines = [];
+  PurchaseLine? refunding = null;
+  decimal amount = 0m;
+  string reason = "";
+  string link = "";
+  string done = "";
+  string problem = "";
+
+  on mount {
+    var today = DateOnly.FromDateTime(DateTime.UtcNow);
+    from = today; to = today;
+    Load();
+  }
+  action Load() {
+    var a = from ?? DateOnly.FromDateTime(DateTime.UtcNow);
+    var b = to ?? a;
+    takings = TakingsBetween(a, b);
+    lines = PurchaseLinesBetween(a, b);
+    link = "";
+  }
+  action Export() { link = PurchasesFileLink(from ?? DateOnly.FromDateTime(DateTime.UtcNow), to ?? DateOnly.FromDateTime(DateTime.UtcNow)); }
+  action StartRefund(PurchaseLine l) { refunding = l; amount = 0m; reason = ""; problem = ""; }
+  action Refund() {
+    problem = "";
+    try {
+      RefundPurchase(Purchase.Single(p => p.Id == refunding!.Id), reason, (long)Math.Round(amount * 100m));
+      done = $"{refunding!.Number}: money given back."; refunding = null; Load();
+    } catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 6) {
+      Row(gap: 3, align: Align.End, wrap: Wrapping.Wrap) {
+        Box(w: "200px") { DatePicker("From", value: from); }
+        Box(w: "200px") { DatePicker("To", value: to); }
+        Button("Show", onPress: Load, size: Size.Sm);
+        Button("Export as CSV", onPress: Export, size: Size.Sm, tone: Tone.Ghost);
+        if (link != "") { TextLink("Download the purchases", to: link); }
+      }
+      if (done != "") { Alert(done, tone: Tone.Success); }
+      Row(gap: 6, wrap: Wrapping.Wrap) {
+        Metric("sales", text: takings.Sales.ToString());
+        Metric("taken", text: takings.TakenText);
+        Metric("given back", text: takings.RefundedText);
+        Metric("net", text: takings.NetText);
+        Metric("waiting to be paid", text: takings.Waiting.ToString());
+      }
+      Stack(gap: 0, bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, overflow: Overflow.Hidden, role: UiRole.List, label: "Takings") {
+        foreach (var t in takings.Lines) {
+          Row(gap: 3, px: 4, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: t.Way) {
+            Text(t.Way, grow: 1, fontWeight: FontWeight.Medium);
+            Text(t.Sales + (t.Sales == 1 ? " sale" : " sales"), color: Colors.TextMuted);
+            Text(t.NetText, fontWeight: FontWeight.Semibold);
+          }
+        }
+        if (takings.Lines.Count == 0) { Box(p: 4) { Text("Nothing taken in this period.", color: Colors.TextMuted); } }
+      }
+      PurchaseLines("Purchases", lines, "No purchases in this period.") { l =>
+        Row(gap: 2) {
+          if (l.CanRefund) { Button("Refund", onPress: () => StartRefund(l), size: Size.Sm, tone: Tone.Ghost); }
+        }
+      }
+    }
+    if (refunding != null) {
+      Dialog("Refund " + refunding!.Number, onDismiss: () => { refunding = null; }, subtitle: refunding!.What + " · " + refunding!.Amount) {
+        DecimalField("How much", value: amount, min: 0m, hint: "0 gives back all that is left.");
+        Field("Why", value: reason);
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        Row(gap: 2, justify: Justify.End) {
+          Button("Cancel", onPress: () => { refunding = null; }, tone: Tone.Ghost);
+          Button("Give the money back", onPress: Refund, tone: Tone.Danger);
+        }
+      }
+    }
+  }
+}
+
+/// The offers — every one, on sale or not — with their price, places and sale window, and changing one. An offer of a
+/// kind the app declares (a tour, a pass) is added where the app adds it; a plain offer can be added here. In a test:
+/// `Ui.Click("Change", within: "Day ticket")`.
+[Composable]
+[Authorize(ManagesOffers)]
+public component OffersDesk() {
+  List<Offer> offers = [];
+  Guid editing = Guid.Empty;
+  bool adding = false;
+  string key = "";
+  string name = "";
+  string description = "";
+  decimal price = 0m;
+  int places = 0;
+  bool active = true;
+  string done = "";
+  string problem = "";
+
+  on mount { Load(); }
+  action Load() { offers = Offer.OrderBy(o => o.SortOrder).ThenBy(o => o.Name).Take(200).ToList(); }
+  action Edit(Offer o) { editing = o.Id; adding = false; name = o.Name; description = o.Description; price = o.Price / 100m; places = o.Places ?? 0; active = o.Active; problem = ""; }
+  action Add() { editing = Guid.Empty; adding = true; key = ""; name = ""; description = ""; price = 0m; places = 0; active = true; problem = ""; }
+  action Stop() { editing = Guid.Empty; adding = false; }
+  action Save() {
+    problem = "";
+    try {
+      var o = adding ? new Offer { Key = key.Trim().ToLower(), Name = name.Trim(), SortOrder = offers.Count + 1 } : Offer.Single(x => x.Id == editing);
+      o.Name = name.Trim(); o.Description = description.Trim(); o.Price = (long)Math.Round(price * 100m); o.Places = places > 0 ? places : null; o.Active = active;
+      UnitOfWork.Commit();
+      done = $"{o.Name} is saved."; Stop(); Load();
+    } catch (Exception ex) { problem = ex.Message; }
+  }
+
+  render {
+    Stack(gap: 4) {
+      Row(gap: 2, justify: Justify.End) { Button("Add an offer", onPress: Add, tone: Tone.Primary, size: Size.Sm); }
+      if (done != "") { Alert(done, tone: Tone.Success); }
+      Stack(gap: 0, bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, overflow: Overflow.Hidden, role: UiRole.List, label: "Offers") {
+        foreach (var o in offers) {
+          Row(gap: 3, align: Align.Center, wrap: Wrapping.Wrap, px: 4, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: o.Name) {
+            Stack(gap: 0, grow: 1, minW: "0") {
+              Text(o.Name, fontWeight: FontWeight.Medium, color: o.Active ? Colors.OnSurface : Colors.TextMuted);
+              Text(o.Key + " · " + (o.Price == 0 ? "Free" : (o.Price / 100m).ToString("0.00")) + (o.Places == null ? "" : " · " + o.Places + " places")
+                   + (o.OnSaleFrom != null && o.OnSaleFrom > DateTime.UtcNow ? " · on sale from " + o.OnSaleFrom!.Value.ToString("d MMM") : "")
+                   + (o.Active ? "" : " · off sale"), fontSize: FontSize.Caption, color: Colors.TextMuted);
+            }
+            Button("Change", onPress: () => Edit(o), size: Size.Sm, tone: Tone.Ghost);
+          }
+        }
+      }
+    }
+    if (adding || editing != Guid.Empty) {
+      Dialog(adding ? "Add an offer" : "Change " + name, onDismiss: Stop) {
+        if (adding) { Field("Key", value: key, hint: "Short and stable — code refers to it."); }
+        Field("Name", value: name);
+        Field("Description", value: description);
+        Row(gap: 3, wrap: Wrapping.Wrap) {
+          Box(w: "200px") { DecimalField("Price", value: price, min: 0m); }
+          Box(w: "200px") { NumberField("Places", value: places, min: 0, hint: "0: no limit."); }
+        }
+        Switch("On sale", value: active);
+        if (problem != "") { Alert(problem, tone: Tone.Danger); }
+        Row(gap: 2, justify: Justify.End) {
+          Button("Cancel", onPress: Stop, tone: Tone.Ghost);
+          Button("Save", onPress: Save, tone: Tone.Primary);
+        }
+      }
+    }
+  }
+}

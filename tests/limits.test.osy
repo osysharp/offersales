@@ -1,0 +1,64 @@
+// What may be bought: sale windows, places, a per-person limit, refusals with a sentence — and buying for somebody else.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.OfferSales;
+
+[Test(Museum)]
+[runas(Vera)]
+void places_run_out_and_the_refusal_says_how_many_are_left() {
+  StartPurchase(Of("tour-10"), "card", null, 2);
+  runas(Oli) {
+    Assert.Equal("Only 1 left of Guided tour, 10:00.",
+                 Assert.Throws<ValidationException>(() => StartPurchase(Of("tour-10"), "card", null, 2)).Message);
+    StartPurchase(Of("tour-10"), "card");
+    Assert.Equal("Guided tour, 10:00 is sold out.", Assert.Throws<ValidationException>(() => StartPurchase(Of("tour-10"), "card")).Message);
+  }
+  Assert.Equal(0, PlacesLeft(Of("tour-10")));
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void a_person_holds_at_most_the_offers_per_person_limit() {
+  StartPurchase(Of("tour-10"), "card");
+  Assert.Equal("At most 2 per person — 1 already held.",
+               Assert.Throws<ValidationException>(() => StartPurchase(Of("tour-10"), "card", null, 2)).Message);
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void off_sale_not_yet_on_sale_and_unknown_or_unready_providers_are_refused_with_a_sentence() {
+  runas(Max) {
+    Assert.Equal("Last year's ticket is not on sale.", Assert.Throws<ValidationException>(() => StartPurchase(Of("old"), "card")).Message);
+    Assert.Equal("Summer tour goes on sale on 1 June 2026.", Assert.Throws<ValidationException>(() => StartPurchase(Of("summer"), "card")).Message);
+  }
+  Assert.Equal("That way of paying is not offered.", Assert.Throws<ValidationException>(() => StartPurchase(Of("day"), "bitcoin")).Message);
+  Assert.Equal("Offline card is not available right now.", Assert.Throws<ValidationException>(() => StartPurchase(Of("day"), "offline")).Message);
+  Assert.Equal("Crowns only does not take EUR.", Assert.Throws<ValidationException>(() => StartPurchase(Of("day"), "crowns")).Message);
+  Assert.Equal("At most 10 at a time.", Assert.Throws<ValidationException>(() => StartPurchase(Of("day"), "card", null, 11)).Message);
+  Assert.Equal(0, Purchase.Count());
+}
+
+[Test(Museum)]
+void a_visitor_who_is_not_signed_in_cannot_buy() {
+  Assert.Denied(() => StartPurchase(Of("day"), "card"));
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void a_parent_buys_for_her_child_and_the_child_holds_what_was_bought() {
+  Assert.Equal(["Vera Holm", "Kim Holm"], OfferSalesRecipients().Select(p => p.DisplayName).ToList());
+  var p = StartPurchase(Of("day"), "card", Kim).Purchase;
+  ConfirmPurchase(p.Reference, Paid(p));
+  Assert.Equal(Kim.Id, Bought(p).For.Id);
+  Assert.Equal(Vera.Id, Bought(p).Buyer.Id);
+  Background.Settle();
+  runas(Max) { Assert.Equal(1, Entry.Count(e => e.Holder == Kim)); }
+}
+
+[Test(Museum)]
+[runas(Oli)]
+void nobody_buys_for_somebody_they_do_not_buy_for() {
+  Assert.Throws<NotAuthorized>(() => StartPurchase(Of("day"), "card", Kim));
+  Assert.Equal(["Oli Brandt"], OfferSalesRecipients().Select(p => p.DisplayName).ToList());
+}

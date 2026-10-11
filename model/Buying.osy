@@ -1,0 +1,199 @@
+// Buying online: the ways to pay, starting a purchase, the buyer coming back from the provider, the provider's own
+// events, a transfer or a pay-at-the-desk marked received, and calling an unpaid purchase off.
+
+namespace Osysharp.OfferSales;
+
+using Osysharp.Identity;
+using Osysharp.Payments;
+using Osysharp.Workflow;
+
+/// A way to pay, as the buyer chooses it.
+public class PaymentChoice {
+  public string Key = "";
+  public string Label = "";
+  public string Description = "";
+  /// Paid outside the app (a transfer, at the desk) and marked received by staff.
+  public bool IsManual;
+}
+
+/// What starting a purchase hands back: send the buyer to `RedirectUrl`, or show them `Instructions` (a manual
+/// payment) — and the purchase itself.
+public class PurchaseStart {
+  public string RedirectUrl = "";
+  public string Instructions = "";
+  public Purchase Purchase = null!;
+}
+
+/// The ways to pay that are set up, ready, and take the kit's currency — nothing else.
+public List<PaymentChoice> PaymentChoices() {
+  var setup = App.Setting<OfferSalesSetup>();
+  List<PaymentChoice> choices = [];
+  foreach (var p in setup.Providers) {
+    if (!p.IsReady() || p.CurrencyRefusal(setup.Currency, setup.Country, setup.Currency) != "") { continue; }
+    choices.Add(new PaymentChoice { Key = p.Key, Label = p.Label, Description = p.Description, IsManual = p.IsManual });
+  }
+  return choices;
+}
+
+/// The provider with `key` in the app's list, or null.
+public IPaymentProvider? OfferSalesProvider(string key) {
+  return App.Setting<OfferSalesSetup>().Providers.FirstOrDefault(p => p.Key == key);
+}
+
+/// A fresh unguessable reference — what the buyer returns with and the provider's events name.
+public string NewPurchaseReference() { return Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N").Substring(0, 8); }
+
+/// The people the caller may buy for: themself first, then whoever every `IOfferSalesRecipients` the app has answers.
+public List<Principal> OfferSalesRecipients() {
+  var me = CurrentPrincipal();
+  List<Principal> people = [me];
+  foreach (var source in App.Implementations<IOfferSalesRecipients>()) {
+    foreach (var p in source.RecipientsFor(me)) {
+      if (!people.Any(x => x.Id == p.Id)) { people.Add(p); }
+    }
+  }
+  return people;
+}
+
+/// Why `holder` may not have `quantity` more of `offer` — "" when they may (the offer's per-person limit, counting
+/// what they hold or wait to pay for).
+public string PerPersonRefusal(Offer offer, Principal holder, int quantity) {
+  if (offer.PerPerson == null) { return ""; }
+  var held = Purchase.Where(p => p.Offer == offer && p.For == holder
+                                 && (p.State == PurchaseState.Pending || p.State == PurchaseState.Failed || p.State == PurchaseState.Paid
+                                     || p.State == PurchaseState.PartlyRefunded)).Sum(p => p.Quantity);
+  if (held + quantity > offer.PerPerson!.Value) {
+    return held == 0 ? "At most " + offer.PerPerson + " per person." : "At most " + offer.PerPerson + " per person — " + held + " already held.";
+  }
+  return "";
+}
+
+/// Start buying `quantity` of `offer` for `forPerson` (the caller, unless given) with the provider named by `providerKey`.
+/// `returnUrl` is where the provider sends the buyer back — `{reference}` in it becomes the purchase's reference and
+/// `{token}` the provider's own; empty, the kit's own page (`/purchases/{reference}/{token}`). The places are held at
+/// once. Refused, with a sentence that says why: not on sale, sold out, over the per-person limit, a person the caller
+/// may not buy for, an unknown or unready provider, one that does not take the currency.
+[Server, Authorize(IsAuthenticated)]
+public PurchaseStart StartPurchase(Offer offer, string providerKey, Principal? forPerson = null, int quantity = 1, string returnUrl = "") {
+  var me = CurrentPrincipal();
+  var holder = forPerson ?? me;
+  if (holder != me && !BuysFor(holder)) { throw new NotAuthorized("You can only buy for yourself, or for somebody you buy for."); }
+  var refusal = OfferRefusal(offer, quantity);
+  if (refusal != "") { throw new ValidationException(refusal); }
+  var limit = PerPersonRefusal(offer, holder, quantity);
+  if (limit != "") { throw new ValidationException(limit); }
+  var setup = App.Setting<OfferSalesSetup>();
+  var amount = offer.Price * quantity;
+  var provider = OfferSalesProvider(providerKey);
+  if (amount > 0) {
+    if (provider == null) { throw new ValidationException("That way of paying is not offered."); }
+    if (!provider!.IsReady()) { throw new ValidationException(provider!.Label + " is not available right now."); }
+    var currency = provider!.CurrencyRefusal(setup.Currency, setup.Country, setup.Currency);
+    if (currency != "") { throw new ValidationException(currency); }
+  }
+  var reference = NewPurchaseReference();
+  var back = (returnUrl == "" ? App.BaseUrl + "/purchases/{reference}/{token}" : returnUrl).Replace("{reference}", reference);
+  var manual = amount > 0 && provider!.IsManual;
+  // Asked before anything is kept: a provider that refuses keeps nothing held. A retried start is one payment — the
+  // reference is its idempotency key.
+  PaymentStart? start = null;
+  if (amount > 0) {
+    start = provider!.Start(new PaymentRequest {
+      Reference = reference, Currency = setup.Currency, Amount = amount, ReturnUrl = back, CancelUrl = back.Replace("{token}", "cancelled"),
+      IdempotencyKey = reference, Description = (setup.Seller == "" ? "" : setup.Seller + " — ") + offer.Name,
+      Country = setup.Country == "" ? null : setup.Country,
+      Lines = [ new PaymentLine { Name = offer.Name, Quantity = quantity, UnitPrice = offer.Price, TaxRate = offer.TaxRate, Reference = offer.Key } ],
+    });
+  }
+  var purchase = new Purchase {
+    Buyer = me, For = holder, Offer = offer, OfferName = offer.Name, Quantity = quantity, UnitPrice = offer.Price,
+    Amount = amount, TaxRate = offer.TaxRate, Currency = setup.Currency, Channel = PurchaseChannel.Online,
+    ProviderKey = amount > 0 ? provider!.Key : "free", MethodLabel = amount > 0 ? provider!.Label : "Free",
+    Reference = reference, ProviderRef = start == null ? "" : start!.ProviderRef ?? "",
+    LapsesAt = manual ? DateTime.UtcNow.AddDays(setup.ManualHoldDays) : DateTime.UtcNow.AddMinutes(setup.HoldMinutes),
+  };
+  HoldPlaces(offer, quantity);
+  UnitOfWork.Commit();
+  if (amount == 0) {
+    PurchaseLife.CorrelatePaymentReported(reference, 0, "", "Free");
+    return new PurchaseStart { Purchase = purchase };
+  }
+  return new PurchaseStart { RedirectUrl = start!.RedirectUrl, Instructions = start!.Instructions ?? "", Purchase = purchase };
+}
+
+/// Ask the provider whether the purchase with `reference` was paid — the buyer coming back (`token` is what the provider
+/// put in the return address), or anyone looking again. Paid moves it to Paid once, however often this is asked; a
+/// refusal moves it to Failed with the provider's sentence; otherwise it waits.
+[Server, Authorize(IsAuthenticated)]
+public Purchase ConfirmPurchase(string reference, string token) {
+  var p = Purchase.FirstOrDefault(x => x.Reference == reference);
+  if (p == null) { throw new ValidationException("There is no such purchase."); }
+  if (p.State != PurchaseState.Pending && p.State != PurchaseState.Failed) { return p; }
+  if (token == "cancelled") { return p; }
+  var provider = OfferSalesProvider(p.ProviderKey);
+  if (provider == null) { throw new ValidationException("That way of paying is no longer offered."); }
+  var check = provider!.Check(p.Reference, p.Amount, token);
+  if (check.State == PaymentState.Paid) {
+    PurchaseLife.CorrelatePaymentReported(p.Reference, p.Amount, check.ProviderRef, provider!.Label);
+  } else if (check.State == PaymentState.Failed) {
+    PurchaseLife.RaiseDeclined(p, check.Message == "" ? "The payment did not go through." : check.Message);
+  }
+  return Purchase.Single(x => x.Reference == reference);
+}
+
+/// The endpoint a provider posts its events to — the app declares the route (`/payments/{provider}/events`, as with
+/// Osysharp.Shop). The provider verifies its own event (a signature, or asking its API), so nothing past `HandleEvent`
+/// runs for a request it did not send; a paid event finds its purchase by reference.
+[AllowAnonymous]
+public string OfferSalesPaymentEvents(string provider) {
+  var p = OfferSalesProvider(provider);
+  if (p == null) { throw new ValidationException($"No payment provider '{provider}' is set up."); }
+  var headers = new Dictionary<string, string>();
+  foreach (var h in p!.EventHeaders) { headers.Add(h, Request.Header(h) ?? ""); }
+  return ApplyOfferSalesEvents(p!.HandleEvent(Request.RawBody ?? "", headers), p!.Label);
+}
+
+/// What a provider's events mean for the purchases — apart from how they arrived, so a test can hand some in.
+public string ApplyOfferSalesEvents(List<PaymentEvent> events, string method) {
+  var outcome = "ignored";
+  foreach (var e in events) {
+    if (e.Kind == PaymentEventKind.Paid && e.State == PaymentState.Paid) {
+      var found = PurchaseLife.CorrelatePaymentReported(e.Reference, e.Amount, e.ProviderRef, method);
+      // Not committed yet: ask the provider to try again rather than lose the payment.
+      if (found == CorrelationOutcome.NoSuchKey) { throw new ConflictException($"No purchase {e.Reference} yet."); }
+      outcome = "ok";
+    }
+  }
+  return outcome;
+}
+
+/// Staff record that a transfer or a pay-at-the-desk arrived. Paid once; marking a paid purchase again does nothing.
+/// Refused for a purchase whose provider moves money by itself — only that provider says it is paid.
+[Server, Authorize(TakesPayments)]
+public Purchase MarkPurchasePaid(Purchase purchase) {
+  if (purchase.State == PurchaseState.Paid || purchase.State == PurchaseState.PartlyRefunded) { return purchase; }
+  if (purchase.State != PurchaseState.Pending && purchase.State != PurchaseState.Failed) {
+    throw new ValidationException(purchase.Number + " is " + purchase.State.Label.ToLower() + " and cannot be paid.");
+  }
+  var provider = OfferSalesProvider(purchase.ProviderKey);
+  if (provider == null || !provider!.IsManual) { throw new ValidationException("This payment is confirmed by its provider, not by hand."); }
+  PurchaseLife.CorrelatePaymentReported(purchase.Reference, purchase.Amount, "", provider!.Label);
+  return Purchase.Single(x => x.Id == purchase.Id);
+}
+
+/// Call off a purchase that was never paid — its buyer, or whoever takes payments. The provider is told to drop what it
+/// started; the places go back on sale. Calling off a paid purchase is refused (refund it); twice does nothing.
+[Server, Authorize(IsAuthenticated)]
+public Purchase CancelPurchase(Purchase purchase, string reason = "Cancelled.") {
+  if (purchase.Buyer != CurrentPrincipal() && !TakesPayments) { throw new NotAuthorized("Only its buyer or the desk can call it off."); }
+  if (purchase.State == PurchaseState.Cancelled) { return purchase; }
+  if (purchase.State != PurchaseState.Pending && purchase.State != PurchaseState.Failed) {
+    throw new ValidationException("Only a purchase that is not paid yet can be called off — refund it instead.");
+  }
+  if (purchase.ProviderRef != "") {
+    var provider = OfferSalesProvider(purchase.ProviderKey);
+    if (provider != null) { provider!.Cancel(purchase.ProviderRef); }
+  }
+  PurchaseLife.RaiseCancel(purchase, reason);
+  return Purchase.Single(x => x.Id == purchase.Id);
+}

@@ -1,0 +1,156 @@
+// Everything the museum says to the kit: its roles and answers, its offers, the ways it takes money, who a visitor buys
+// for, and what it hands over when a purchase is paid.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Payments;
+using Osysharp.OfferSales;
+
+[Role] enum MuseumRole { Authenticator, Visitor, FrontDesk, Manager }
+
+policy IsFrontDesk => RoleGrant.Any(g => g.Member == user && g.Role == MuseumRole.FrontDesk);
+policy IsManager => RoleGrant.Any(g => g.Member == user && g.Role == MuseumRole.Manager);
+
+/// The manager sets the offers and gives money back; the front desk sells.
+policy ManagesOffers => IsManager;
+policy SellsAtCounter => IsFrontDesk;
+
+/// A visitor buys for themself and for the children on their family card.
+policy BuysFor(Principal holder) => holder == user || FamilyCard.Any(f => f.Adult == user && f.Child == holder);
+
+app.Accounts = new AccountsSetup { AppName = "Harbour Museum", SignupRole = MuseumRole.Visitor };
+
+/// A child on a visitor's family card — the museum's own record.
+entity FamilyCard {
+  [Required] Principal Adult;
+  [Required] Principal Child;
+  security { allow read when IsAuthenticated; allow create when IsManager; }
+}
+
+/// The museum's answer to who a visitor may buy for.
+public class FamilyCards : IOfferSalesRecipients {
+  public List<Principal> RecipientsFor(Principal buyer) {
+    return FamilyCard.Where(f => f.Adult == buyer).Select(f => f.Child).Take(10).ToList();
+  }
+}
+
+/// A day's entry.
+entity DayTicket : Offer {
+  security { allow read when IsAnonymous || IsAuthenticated; allow create, update when ManagesOffers; }
+}
+
+/// A guided tour at a time, with a few places.
+entity GuidedTour : Offer {
+  DateTime? StartsAt;
+  security { allow read when IsAnonymous || IsAuthenticated; allow create, update when ManagesOffers; }
+}
+
+/// A year of visits, for members only to see.
+entity AnnualPass : Offer {
+  security { allow read when IsAuthenticated; allow create, update when ManagesOffers; }
+}
+
+/// A card provider written in the app: paid when the buyer returns with "paid-<reference>", declined with "declined",
+/// otherwise not yet. Set up differently it plays one that refuses refunds, one without credentials and one taking
+/// crowns only.
+public class TestCard : IPaymentProvider {
+  public string Key { get; set; } = "card";
+  public string Label { get; set; } = "Card";
+  public string Description { get; set; } = "Pay by card.";
+  public bool CapturesLater { get; } = false;
+  public bool IsManual { get; } = false;
+  public List<string> EventHeaders { get; } = ["X-Signature"];
+  public bool SavesMethods { get; } = false;
+  public bool Ready = true;
+  public bool RefundsFail = false;
+  public string OnlyCurrency = "";
+
+  public bool IsReady() { return Ready; }
+  public string CurrencyRefusal(string currency, string country, string sellers) {
+    return OnlyCurrency == "" || OnlyCurrency == currency ? "" : Label + " does not take " + currency + ".";
+  }
+  public PaymentCheck ChargeSaved(string savedMethod, PaymentRequest request) { return new PaymentCheck { State = PaymentState.Failed }; }
+  public void ForgetMethod(string savedMethod) { }
+  public PaymentStart Start(PaymentRequest request) {
+    return new PaymentStart { RedirectUrl = "https://pay.test/" + request.Reference + "?back=" + request.ReturnUrl, ProviderRef = "pi-" + request.Reference };
+  }
+  public PaymentCheck Check(string reference, long amount, string token) {
+    if (token == "paid-" + reference) { return new PaymentCheck { State = PaymentState.Paid, ProviderRef = "pi-" + reference }; }
+    if (token == "declined") { return new PaymentCheck { State = PaymentState.Failed, Message = "The card was declined." }; }
+    return new PaymentCheck { State = PaymentState.NotPaid, Message = "Not paid yet." };
+  }
+  public void Capture(string providerRef, long amount) { }
+  public PaymentRefund Refund(string providerRef, long amount, string reason, string idempotencyKey) {
+    return new PaymentRefund { State = RefundsFail ? RefundState.Failed : RefundState.Succeeded, RefundRef = "re-" + providerRef + "-" + amount };
+  }
+  public void Cancel(string providerRef) { }
+  public List<Payout> Payouts(DateTime from, DateTime to) { return []; }
+  /// Signed with "ok": a paid event for the reference in the body.
+  public List<PaymentEvent> HandleEvent(string body, Dictionary<string, string> headers) {
+    if (headers["X-Signature"] != "ok") { throw new ExternalServiceException("Not signed."); }
+    return [ new PaymentEvent { Kind = PaymentEventKind.Paid, State = PaymentState.Paid, Reference = body, ProviderRef = "pi-" + body } ];
+  }
+}
+
+/// A card reader at the front desk: paid once the customer has tapped (the purchase's reference starts the tap).
+public class TestReader : ICounterPayment {
+  public string Key { get; set; } = "reader";
+  public string Label { get; set; } = "Card reader";
+  public string RefundsThrough { get; set; } = "card";
+  public bool IsReady() { return true; }
+  public string CounterCurrencyRefusal(string currency) { return ""; }
+  public CounterPaymentStart StartAtCounter(PaymentRequest request) {
+    return new CounterPaymentStart { ProviderRef = "tap-" + request.Reference, Instructions = "Tap the card on the reader." };
+  }
+  public PaymentCheck CheckAtCounter(string reference, long amount, string providerRef) {
+    return Tapped.Any(t => t.Reference == reference) ? new PaymentCheck { State = PaymentState.Paid, ProviderRef = providerRef }
+                                                     : new PaymentCheck { State = PaymentState.Pending, Message = "Waiting for the card." };
+  }
+  public void CancelAtCounter(string providerRef) { }
+}
+
+/// A card tapped on the test reader — what the reader would know.
+entity Tapped {
+  [MaxLength(64)] string Reference = "";
+  security { allow read, create when IsAuthenticated; }
+}
+
+app.OfferSales = new OfferSalesSetup {
+  Providers = [
+    new TestCard(),
+    new TestCard { Key = "stubborn", Label = "Stubborn card", RefundsFail = true },
+    new TestCard { Key = "offline", Label = "Offline card", Ready = false },
+    new TestCard { Key = "crowns", Label = "Crowns only", OnlyCurrency = "SEK" },
+    new ManualPayment { Key = "transfer", Label = "Bank transfer", Description = "Pay to our account; we confirm it.", Instructions = "Pay to IBAN NL00 TEST 0123 4567 89 with your receipt number." },
+  ],
+  CounterPayments = [ new TestReader() ],
+  CounterMethods = ["Cash", "Card on the terminal"],
+  Currency = "EUR",
+  Seller = "Harbour Museum",
+};
+
+/// What the museum hands over: an entry for whoever a paid ticket is for, taken back on a whole refund.
+entity Entry {
+  [Required] Principal Holder;
+  [MaxLength(64)] string Reference = "";
+  bool Void = false;
+  security { allow read when IsAuthenticated where Holder == user; allow read when IsManager; }
+}
+
+[On] void HandOver(PurchasePaid e) { new Entry { Holder = e.Purchase.For, Reference = e.Purchase.Reference }; }
+[On] void TakeBack(PurchaseRefunded e) {
+  if (!e.Whole) { return; }
+  foreach (var x in Entry.Where(x => x.Reference == e.Purchase.Reference).ToList()) { x.Void = true; }
+}
+
+/// What the museum heard from the kit, one row per event.
+entity Heard {
+  [MaxLength(40)] string Event = "";
+  [MaxLength(200)] string Detail = "";
+  security { allow read when IsAuthenticated; }
+}
+
+[On] void HearPaid(PurchasePaid e) { new Heard { Event = "paid", Detail = e.Purchase.Reference }; }
+[On] void HearFailed(PurchaseFailed e) { new Heard { Event = "failed", Detail = e.Purchase.Reference }; }
+[On] void HearCancelled(PurchaseCancelled e) { new Heard { Event = "cancelled", Detail = e.Purchase.Reference }; }
+[On] void HearRefunded(PurchaseRefunded e) { new Heard { Event = e.Whole ? "refunded" : "partrefunded", Detail = e.Purchase.Reference + ":" + e.Refund.Amount }; }

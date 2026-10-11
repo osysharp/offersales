@@ -1,0 +1,63 @@
+// The rules declared on the data, each proved as the person it is about: a purchase is read by its buyer, the person it
+// is for and the desk; nobody writes one past the kit's functions; the count of places moves only with a sale.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.OfferSales;
+
+[Test(Museum)]
+[runas(Oli)]
+void a_visitor_reads_their_own_purchases_and_nobody_elses() {
+  StartPurchase(Of("day"), "card");
+  runas(Vera) { StartPurchase(Of("day"), "card"); StartPurchase(Of("day"), "card", Kim); }
+  Assert.Equal(1, Purchase.Count());
+  Assert.Equal(1, MyPurchases().Count);
+  runas(Kim) { Assert.Equal(1, MyPurchases().Count); }
+  runas(Fia) { Assert.Equal(3, Purchase.Count()); }
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void nobody_writes_a_purchase_or_moves_one_past_the_kit() {
+  Assert.Denied(() => { WritePurchase(Of("day"), Vera); UnitOfWork.Commit(); });
+  var p = StartPurchase(Of("day"), "card").Purchase;
+  Assert.Denied(() => { SetRefunded(Bought(p), 1250); UnitOfWork.Commit(); });
+  runas(Max) { Assert.Denied(() => { SetRefunded(Purchase.Single(x => x.Id == p.Id), 1250); UnitOfWork.Commit(); }); }
+  // Its state is the purchase's own life's to move: setting it is refused where it is written, at compile time.
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void the_count_of_places_moves_only_with_a_sale_even_for_the_manager() {
+  StartPurchase(Of("tour-10"), "card");
+  Assert.Denied(() => { SetHeld(Of("tour-10"), 0); UnitOfWork.Commit(); });
+  runas(Max) { Assert.Denied(() => { SetHeld(Of("tour-10"), 3); UnitOfWork.Commit(); }); }
+  Assert.Equal(1, HeldOf(Of("tour-10")));
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void a_visitor_cannot_change_a_price_and_the_manager_can() {
+  Assert.Denied(() => { SetPrice(Of("day"), 1); UnitOfWork.Commit(); });
+  runas(Max) { SetPrice(Of("day"), 1400); UnitOfWork.Commit(); }
+  Assert.Equal(1400L, Of("day").Price);
+}
+
+[Test(Museum)]
+[runas(Max)]
+void the_manager_reads_every_offer_including_the_switched_off_and_keys_are_unique() {
+  Assert.Equal(6, Offer.Count());
+  Assert.Throws<ValidationException>(() => { new DayTicket { Key = "day", Name = "Twice", Price = 1 }; UnitOfWork.Commit(); });
+  Assert.Throws<ValidationException>(() => { new DayTicket { Key = "neg", Name = "Negative", Price = -1 }; UnitOfWork.Commit(); });
+}
+
+[Test(Museum)]
+[runas(Max)]
+void the_policies_answer_as_the_museum_says() {
+  Assert.True(Security.Authorize(Max, ManagesOffers));
+  Assert.True(Security.Authorize(Max, RefundsPurchases));
+  Assert.False(Security.Authorize(Fia, RefundsPurchases));
+  Assert.True(Security.Authorize(Fia, SellsAtCounter));
+  Assert.True(Security.Authorize(Fia, TakesPayments));
+  Assert.False(Security.Authorize(Vera, TakesPayments));
+}

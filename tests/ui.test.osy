@@ -1,0 +1,143 @@
+// The kit's pages, driven as each person drives them. `osy test --pixels` photographs each (Ui.Shot) — the README's
+// screenshots are these.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.OfferSales;
+
+[Test(Museum)]
+[runas(Vera)]
+void a_visitor_buys_two_tickets_for_her_child_by_transfer_and_is_told_how_to_pay() {
+  Ui.Viewport(1280, 1000);
+  Ui.SignInAs(Vera);
+  Ui.Visit("/buy");
+  Assert.Visible("€12.50", within: "Day ticket");
+  Assert.Visible("3 left", within: "Guided tour, 10:00");
+  Ui.Click("Buy", within: "Day ticket");
+  Assert.Dialog("Buy Day ticket");
+  Ui.Fill("How many", "2");
+  Ui.Select("For", Kim);
+  Ui.Click("Bank transfer — Pay to our account; we confirm it.");
+  Ui.Shot("offer-sales-buy");
+  Ui.Click("Continue to payment");
+  Assert.Visible("Receipt R-000001 waits for your payment.");
+  Assert.Visible("Pay to IBAN NL00 TEST 0123 4567 89 with your receipt number.", within: "How to pay");
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void back_from_the_card_provider_the_purchase_is_paid_and_the_receipt_shows() {
+  var p = StartPurchase(Of("day"), "card", null, 2).Purchase;
+  Ui.Viewport(1280, 900);
+  Ui.SignInAs(Vera);
+  Ui.Visit("/purchases/" + p.Reference + "/paid-" + p.Reference);
+  Assert.Visible("Paid — thank you. Your receipt is below.");
+  Assert.Visible("2 × Day ticket · €25.00", within: "Receipt R-000001");
+  Assert.Visible("VAT 9 % included · €2.06", within: "Receipt R-000001");
+  Ui.Shot("offer-sales-paid");
+  Ui.Visit("/purchases");
+  Assert.Visible("2 × Day ticket · €25.00", within: "Purchases");
+  Ui.Click("Receipt", within: "R-000001");
+  Assert.Dialog("Receipt R-000001");
+}
+
+[Test(Museum)]
+[runas(Fia)]
+void the_front_desk_sells_a_tour_for_cash_and_marks_a_transfer_received() {
+  runas(Vera) { StartPurchase(Of("annual"), "transfer"); }
+  Ui.Viewport(1440, 1000);
+  Ui.SignInAs(Fia);
+  Ui.Visit("/staff/counter");
+  Assert.Visible("Annual pass · €60.00", within: "Waiting to be paid");
+  Ui.Select("What", Of("tour-10"));
+  Ui.Fill("Find a person", "oli");
+  Ui.Click("Find");
+  Ui.Click("Oli Brandt", within: "People found");
+  Ui.Fill("How many", "2");
+  Ui.Click("Cash");
+  Ui.Click("Sell");
+  Assert.Visible("Sold — receipt R-000002.");
+  Assert.Visible("2 × Guided tour, 10:00 · €16.00", within: "Receipt R-000002");
+  Ui.Shot("offer-sales-counter");
+  Ui.Click("Mark paid", within: "R-000001");
+  Assert.Visible("R-000001 is paid.");
+}
+
+[Test(Museum)]
+[runas(Fia)]
+void the_card_reader_waits_until_the_card_is_tapped() {
+  Ui.Viewport(1440, 1000);
+  Ui.SignInAs(Fia);
+  Ui.Visit("/staff/counter");
+  Ui.Select("What", Of("day"));
+  Ui.Fill("Find a person", "vera");
+  Ui.Click("Find");
+  Ui.Click("Vera Holm", within: "People found");
+  Ui.Click("Card reader");
+  Ui.Click("Sell");
+  Assert.Dialog("Waiting for the payment");
+  Assert.Visible("Tap the card on the reader.");
+  new Tapped { Reference = Purchase.Single().Reference };
+  UnitOfWork.Commit();
+  Ui.Click("Check");
+  Assert.Visible("Paid — receipt R-000001.");
+}
+
+[Test(Museum)]
+[runas(Max)]
+void the_manager_reads_the_takings_and_refunds_part_of_a_sale() {
+  runas(Fia) {
+    SellAtCounter(Of("day"), Oli, "Cash", 2);
+    SellAtCounter(Of("tour-10"), Vera, "Card on the terminal", 2);
+  }
+  runas(Vera) {
+    var online = StartPurchase(Of("annual"), "card").Purchase;
+    ConfirmPurchase(online.Reference, "paid-" + online.Reference);
+  }
+  Ui.Viewport(1440, 1000);
+  Ui.SignInAs(Max);
+  Ui.Visit("/staff/sales");
+  Assert.Visible("€101.00");
+  Assert.Visible("At the counter · Cash", within: "Takings");
+  Ui.Click("Refund", within: "R-000002");
+  Ui.Fill("How much", "8");
+  Ui.Fill("Why", "One of them could not come");
+  Ui.Click("Give the money back");
+  Assert.Visible("R-000002: money given back.");
+  Assert.Visible("€93.00");
+  Ui.Shot("offer-sales-sales");
+  Ui.Click("Export as CSV");
+  Assert.Visible("Download the purchases");
+}
+
+[Test(Museum)]
+[runas(Max)]
+void the_manager_changes_a_price_and_takes_an_offer_off_sale() {
+  Ui.Viewport(1280, 900);
+  Ui.SignInAs(Max);
+  Ui.Visit("/staff/offers");
+  Assert.Visible("off sale", within: "Last year's ticket");
+  Ui.Click("Change", within: "Day ticket");
+  Ui.Fill("Price", "14");
+  Ui.Click("Save");
+  Assert.Visible("Day ticket is saved.");
+  Assert.Visible("day · 14.00", within: "Day ticket");
+  Ui.Shot("offer-sales-offers");
+}
+
+[Test(Museum)]
+[runas(Vera)]
+void the_pages_fit_a_phone_and_read_in_the_dark() {
+  Ui.SignInAs(Vera);
+  Ui.Viewport(390, 844);
+  Ui.Visit("/buy");
+  Assert.Visible("Day ticket");
+  Assert.NoOverflow();
+  Ui.Shot("offer-sales-buy-phone");
+  Ui.Viewport(1440, 1000);
+  Ui.Theme("dark");
+  Ui.SignInAs(Fia);
+  Ui.Visit("/staff/counter");
+  Assert.Visible("Waiting to be paid");
+  Ui.Shot("offer-sales-counter-dark");
+}

@@ -1,0 +1,25 @@
+// The space's roles and its answers to the kits.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Payments;
+using Osysharp.OfferSales;
+using Osysharp.PrepaidCredits;
+using Osysharp.Memberships;
+
+[Role] enum SpaceRole { Authenticator, Member, Host }
+
+policy IsHost => RoleGrant.Any(g => g.Member == user && g.Role == SpaceRole.Host);
+
+/// The host sells, refunds and looks after memberships.
+policy ManagesOffers => IsHost;
+policy SellsAtCounter => IsHost;
+policy SellsMemberships => IsHost;
+policy AdmitsMembers => IsHost;
+policy ManagesCredits => IsHost;
+
+app.Accounts = new AccountsSetup { AppName = "Ropewalk Co-working", SignupRole = SpaceRole.Member };
+app.OfferSales = new OfferSalesSetup {
+  Providers = [ new ManualPayment { Key = "invoice", Label = "Invoice", Instructions = "We send an invoice." } ],
+  Currency = "EUR",
+};

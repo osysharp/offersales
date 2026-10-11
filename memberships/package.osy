@@ -1,0 +1,20 @@
+// Osysharp.OfferSales.Memberships — a membership plan is something Osysharp.OfferSales sells: a day ticket, a month, a year,
+// a card of visits. Paid, the membership is sold to whoever it was bought for — once, whichever way the money arrived;
+// refunded in full, it ends.
+//
+// ⚑ A BRIDGE, SO NEITHER KIT DEPENDS ON THE OTHER: an app using both writes nothing but its offers — it arrives by
+//   itself (`completes` below — `osy lock` includes it and says so).
+// ⚑ ONE MEMBERSHIP PER ONE BOUGHT, EACH UNDER ITS OWN REFERENCE (`purchase:<reference>:<n>`), so a repeated payment
+//   report sells nothing twice, and a refund ends exactly those.
+package Osysharp.OfferSales.Memberships {
+  version     "0.1.0";
+  minPlatform "0.9.0";
+  summary     "an Osysharp.Memberships plan as an Osysharp.OfferSales offer — sold to whoever it was bought for once it is paid, at what was paid, and ended when it is refunded in full.";
+  completes   Osysharp.OfferSales@0, Osysharp.Memberships@0;
+  model "model/*.osy";
+  use Osysharp.Identity@0;
+  use Osysharp.OfferSales@0;
+  use Osysharp.PrepaidCredits@0;
+  use Osysharp.Memberships@0;
+  tests "tests";
+}

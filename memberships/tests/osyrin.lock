@@ -1,0 +1,54 @@
+{
+  "platform": {
+    "version": "0.9.0"
+  },
+  "entries": [
+    {
+      "name": "Osysharp.OfferSales.Memberships",
+      "kind": "package",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/offer-sales-memberships",
+      "included": "completes Osysharp.OfferSales \u002B Osysharp.Memberships"
+    },
+    {
+      "name": "Osysharp.OfferSales.PrepaidCredits",
+      "kind": "package",
+      "shadow": "app-forkable",
+      "source": "workspace:kits/offer-sales-prepaid-credits",
+      "included": "completes Osysharp.OfferSales \u002B Osysharp.PrepaidCredits"
+    }
+  ],
+  "bridges": {
+    "searched": [
+      "workspace",
+      "platform",
+      "github"
+    ],
+    "notIncluded": [
+      {
+        "name": "Osysharp.Conversations.Sms",
+        "reason": "completes Osysharp.Conversations \u002B Osysharp.Sms, and this app does not use \u0060Osysharp.Conversations\u0060."
+      },
+      {
+        "name": "Osysharp.Privacy.Memberships",
+        "reason": "completes Osysharp.Privacy \u002B Osysharp.Memberships, and this app does not use \u0060Osysharp.Privacy\u0060."
+      },
+      {
+        "name": "Osysharp.Privacy.OfferSales",
+        "reason": "completes Osysharp.Privacy \u002B Osysharp.OfferSales, and this app does not use \u0060Osysharp.Privacy\u0060."
+      },
+      {
+        "name": "Osysharp.Privacy.PrepaidCredits",
+        "reason": "completes Osysharp.Privacy \u002B Osysharp.PrepaidCredits, and this app does not use \u0060Osysharp.Privacy\u0060."
+      },
+      {
+        "name": "Osysharp.Privacy.Sms",
+        "reason": "completes Osysharp.Privacy \u002B Osysharp.Sms, and this app does not use \u0060Osysharp.Privacy\u0060."
+      },
+      {
+        "name": "Osysharp.Privacy.UserAccounts",
+        "reason": "completes Osysharp.Privacy \u002B Osysharp.UserAccounts, and this app does not use \u0060Osysharp.Privacy\u0060."
+      }
+    ]
+  }
+}

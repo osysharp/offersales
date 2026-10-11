@@ -1,0 +1,55 @@
+// A monthly desk, bought and paid: the membership is sold once and lets its member in; refunded in full, it ends.
+
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.OfferSales;
+using Osysharp.Memberships;
+using Osysharp.OfferSales.Memberships;
+
+principal Noor => User.Single(u => u.Email == "noor@ropewalk.test");
+principal Hal => User.Single(u => u.Email == "hal@ropewalk.test");
+
+[TestFixture]
+void Space() {
+  TestClock.Set(new DateTime(2026, 4, 1, 9, 0, 0));
+  var noor = new User { Email = "noor@ropewalk.test", DisplayName = "Noor Sato", EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = noor, Role = SpaceRole.Member };
+  var hal = new User { Email = "hal@ropewalk.test", DisplayName = "Hal Ives", EmailVerifiedAt = DateTime.UtcNow };
+  new RoleGrant { Member = hal, Role = SpaceRole.Host };
+  var monthly = new MembershipPlan { Name = "Monthly desk", Period = PlanPeriod.Month, Periods = 1, Price = 220m };
+  new MembershipOffer { Key = "monthly", Name = "Monthly desk", Price = 22000, Plan = monthly };
+}
+
+Offer Monthly() { return Offer.Single(o => o.Key == "monthly"); }
+
+[Test(Space)]
+[runas(Noor)]
+void a_monthly_desk_paid_by_invoice_is_sold_once_and_lets_her_in() {
+  var p = StartPurchase(Monthly(), "invoice").Purchase;
+  runas(Hal) {
+    MarkPurchasePaid(Purchase.Single(x => x.Id == p.Id));
+    MarkPurchasePaid(Purchase.Single(x => x.Id == p.Id));
+  }
+  Background.Settle();
+  runas(Hal) {
+    Assert.Equal(1, Membership.Count(m => m.Holder == Noor));
+    var m = Membership.Single(x => x.Holder == Noor);
+    Assert.Equal(220m, m.Price);
+    Assert.Equal(new DateTime(2026, 5, 1, 9, 0, 0), m.ValidUntil);
+    Assert.True(EntryFor(Noor).CanEnter);
+  }
+}
+
+[Test(Space)]
+[runas(Hal)]
+void a_whole_refund_ends_the_membership_and_a_part_does_not() {
+  var p = SellAtCounter(Monthly(), Noor, "Card on the terminal");
+  Background.Settle();
+  RefundPurchase(Purchase.Single(x => x.Id == p.Id), "Goodwill", 2000);
+  Background.Settle();
+  Assert.True(EntryFor(Noor).CanEnter);
+  RefundPurchase(Purchase.Single(x => x.Id == p.Id), "Left in the first week");
+  Background.Settle();
+  Assert.False(EntryFor(Noor).CanEnter);
+  Assert.Contains("Refunded", Membership.Single(x => x.Holder == Noor).EndedBecause);
+}

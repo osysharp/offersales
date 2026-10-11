@@ -1,0 +1,42 @@
+namespace Osysharp.OfferSales.Memberships;
+
+using Osysharp.Identity;
+using Osysharp.OfferSales;
+using Osysharp.Memberships;
+
+/// An offer of a membership plan — its price is the offer's, its length, visits and pausing the plan's. The app adds
+/// one per plan it sells this way.
+public entity MembershipOffer : Offer {
+  [Required("Which plan does it sell?")] MembershipPlan Plan;
+
+  security {
+    allow read when IsAnonymous || IsAuthenticated;
+    allow create, update when ManagesOffers;
+  }
+}
+
+/// The reference the `n`th membership of a purchase is sold under.
+public string MembershipReference(Purchase p, int n) { return "purchase:" + p.Reference + ":" + n; }
+
+/// Paid: one membership for each one bought, to whoever it was bought for, at what was paid for it — once, whatever
+/// reports the payment and however often.
+[On]
+internal void SellPaidMembership(PurchasePaid e) {
+  var offer = MembershipOffer.Include(o => o.Plan).FirstOrDefault(o => o.Id == e.Purchase.Offer.Id);
+  if (offer == null) { return; }
+  var each = Math.Round(e.Purchase.Amount / 100m / e.Purchase.Quantity, 2);
+  for (var n = 1; n <= e.Purchase.Quantity; n++) {
+    SellMembership(e.Purchase.For, offer!.Plan, MembershipReference(e.Purchase, n), null, false, each);
+  }
+}
+
+/// Refunded in full: each membership it sold ends, saying so. A part refund leaves them running.
+[On]
+internal void EndRefundedMembership(PurchaseRefunded e) {
+  if (!e.Whole) { return; }
+  for (var n = 1; n <= e.Purchase.Quantity; n++) {
+    var reference = MembershipReference(e.Purchase, n);
+    var m = Membership.FirstOrDefault(x => x.Reference == reference);
+    if (m != null && m!.EndedAt == null) { EndMembership(m!, "Refunded — receipt " + e.Purchase.Number); }
+  }
+}

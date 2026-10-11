@@ -1,0 +1,19 @@
+// The producer's test project for Osysharp.OfferSales.Memberships — a co-working space that sells a monthly desk and a day
+// pass online and at its front desk.
+app OfferSalesMembershipsKitTests {
+  model "model/**/*.osy";
+  tests "**/*.test.osy";
+  use Osysharp.Identity@0;
+  use Osysharp.Mail@0;
+  use Osysharp.Sms@0;
+  use Osysharp.EmailTemplates@0;
+  use Osysharp.UserAccounts@1;
+  use Osysharp.Payments@0;
+  use Osysharp.OfferSales@0;
+  use Osysharp.PrepaidCredits@0;
+  use Osysharp.Memberships@0;
+  // Osysharp.OfferSales.Memberships, the package under test, is not written: it arrives by itself because this app uses
+  // OfferSales and Memberships, which it completes (`osy lock` includes it and says so).
+  use Osysharp.Ui;
+  use Osysharp.Workflow;
+}

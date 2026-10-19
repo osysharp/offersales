@@ -14,8 +14,8 @@
 //   `policy SellsAtCounter => IsDesk;` (sells in person, marks a transfer received), and — when somebody buys for
 //   somebody else — `policy BuysFor(Principal holder) => holder == user || ActsForDependant(holder);`.
 package Osysharp.OfferSales {
-  version     "0.1.0";
-  minPlatform "0.9.0";
+  version     "0.2.0";
+  minPlatform "0.14.0";
   summary     "sell a few simple offers — a ticket, a pass, a pack, a membership — online through any payment provider, by transfer or pay-at-the-desk marked received, or across a counter (cash, a card terminal, a reader or a QR code), for the buyer or somebody they buy for; prices, sale windows, limited places and a per-person limit; each purchase recorded with a receipt number, held while it is paid and lapsing when it is not; paid announced exactly once, refunds whole or in part announced once each; the day's takings by channel and method and a CSV — with an offers page, a buyer's purchases, a counter and an offers desk.";
   model "model/**/*.osy";
   use Osysharp.Identity@0;   // `Principal`: who buys, and who it is for

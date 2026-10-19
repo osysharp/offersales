@@ -251,7 +251,7 @@ public component PurchaseLines(string title, List<PurchaseLine> lines, string em
   render {
     Stack(gap: 2) {
       SectionLabel(title);
-      Stack(gap: 0, bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, overflow: Overflow.Hidden, role: UiRole.List, label: title) {
+      Stack(gap: 0, bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, overflow: Overflow.Hidden, role: (lines.Count == 0) ? UiRole.Group : UiRole.List, label: title) {
         if (lines.Count == 0) { Box(p: 4) { Text(empty, color: Colors.TextMuted); } }
         foreach (var l in lines) {
           Row(gap: 3, align: Align.Center, wrap: Wrapping.Wrap, px: 4, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: l.Number) {
@@ -442,7 +442,7 @@ public component SalesDesk() {
         Metric("net", text: takings.NetText);
         Metric("waiting to be paid", text: takings.Waiting.ToString());
       }
-      Stack(gap: 0, bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, overflow: Overflow.Hidden, role: UiRole.List, label: "Takings") {
+      Stack(gap: 0, bg: Colors.Surface, borderW: 1, border: Colors.Border, rounded: Radius.Lg, overflow: Overflow.Hidden, role: (takings.Lines.Count == 0) ? UiRole.Group : UiRole.List, label: "Takings") {
         foreach (var t in takings.Lines) {
           Row(gap: 3, px: 4, py: 3, borderBW: 1, border: Colors.Border, role: UiRole.ListItem, label: t.Way) {
             Text(t.Way, grow: 1, fontWeight: FontWeight.Medium);

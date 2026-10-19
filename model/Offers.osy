@@ -98,7 +98,7 @@ public entity Offer {
 }
 
 /// How many of an offer are held or sold — one row per offer with places, made by its first purchase. Moved only by
-/// `HoldPlaces` (a buyer's purchase, the counter's sale) and given back by the purchase's own life, never by hand; two
+/// `HoldPlaces` (a buyer's purchase, the counter's sale) and given back by `ReturnPlaces` (the purchase's own life), never by hand; two
 /// purchases racing for the last place cannot both hold it (`[ConcurrencyCheck]`).
 [ConcurrencyCheck]
 public entity OfferPlaces {
@@ -109,7 +109,7 @@ public entity OfferPlaces {
     allow read when IsAnonymous || IsAuthenticated;
     allow create, update when IsAuthenticated;
     deny create except via HoldPlaces;
-    deny update Held except via HoldPlaces;
+    deny update Held except via HoldPlaces, ReturnPlaces;
   }
 }
 
@@ -167,8 +167,9 @@ internal void HoldPlaces(Offer offer, int quantity) {
 }
 
 /// Give `quantity` places of `offer` back — a purchase lapsed, was cancelled or refunded in full. Run by the purchase's
-/// own life (`PurchaseLife`), as the system.
-void ReturnPlaces(Offer offer, int quantity) {
+/// own life (`PurchaseLife`) alone, as the system — its steps are the only callers.
+[Server, Authorize(RefundsPurchases)]
+internal void ReturnPlaces(Offer offer, int quantity) {
   var row = OfferPlaces.FirstOrDefault(x => x.Offer == offer);
   if (row != null) { row.Held = Math.Max(0, row.Held - quantity); }
 }

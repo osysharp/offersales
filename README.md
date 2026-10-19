@@ -46,7 +46,7 @@ taken back on a whole refund — by itself (`Osysharp.OfferSales.PrepaidCredits`
 use Osysharp.Identity@0;
 use Osysharp.Payments@0;
 use Osysharp.Payments.Stripe@0 { egress "api.stripe.com"; }   // a provider, when you want one
-use Osysharp.OfferSales@0;
+use Osysharp.OfferSales@1;
 ```
 
 ```osy

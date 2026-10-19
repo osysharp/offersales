@@ -11,7 +11,7 @@ app OfferSalesKitTests {
   use Osysharp.UserAccounts@1;
   use Osysharp.Payments@0;
   use Osysharp.Csv@0;
-  use Osysharp.OfferSales@0;
+  use Osysharp.OfferSales@1;
   use Osysharp.Storage;
   use Osysharp.Ui;
   use Osysharp.Workflow;

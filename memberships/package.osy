@@ -7,13 +7,13 @@
 // ⚑ ONE MEMBERSHIP PER ONE BOUGHT, EACH UNDER ITS OWN REFERENCE (`purchase:<reference>:<n>`), so a repeated payment
 //   report sells nothing twice, and a refund ends exactly those.
 package Osysharp.OfferSales.Memberships {
-  version     "0.1.0";
-  minPlatform "0.9.0";
+  version     "0.2.0";
+  minPlatform "0.14.0";
   summary     "an Osysharp.Memberships plan as an Osysharp.OfferSales offer — sold to whoever it was bought for once it is paid, at what was paid, and ended when it is refunded in full.";
-  completes   Osysharp.OfferSales@0, Osysharp.Memberships@0;
+  completes   Osysharp.OfferSales@1, Osysharp.Memberships@0;
   model "model/*.osy";
   use Osysharp.Identity@0;
-  use Osysharp.OfferSales@0;
+  use Osysharp.OfferSales@1;
   use Osysharp.PrepaidCredits@0;
   use Osysharp.Memberships@0;
   tests "tests";

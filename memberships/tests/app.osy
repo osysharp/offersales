@@ -9,7 +9,7 @@ app OfferSalesMembershipsKitTests {
   use Osysharp.EmailTemplates@0;
   use Osysharp.UserAccounts@1;
   use Osysharp.Payments@0;
-  use Osysharp.OfferSales@0;
+  use Osysharp.OfferSales@1;
   use Osysharp.PrepaidCredits@0;
   use Osysharp.Memberships@0;
   // Osysharp.OfferSales.Memberships, the package under test, is not written: it arrives by itself because this app uses

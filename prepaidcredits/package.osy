@@ -7,13 +7,13 @@
 // ⚑ THE GRANT IS IDEMPOTENT PER PURCHASE: the pack's reference is the purchase's (`purchase:<reference>`), so however
 //   often a payment is reported, one pack is granted, and a refund finds exactly that pack.
 package Osysharp.OfferSales.PrepaidCredits {
-  version     "0.1.0";
-  minPlatform "0.9.0";
+  version     "0.2.0";
+  minPlatform "0.14.0";
   summary     "a pack of Osysharp.PrepaidCredits as an Osysharp.OfferSales offer — credits, a scope and a validity — granted to whoever it was bought for once it is paid, and voided when it is refunded in full.";
-  completes   Osysharp.OfferSales@0, Osysharp.PrepaidCredits@0;
+  completes   Osysharp.OfferSales@1, Osysharp.PrepaidCredits@0;
   model "model/*.osy";
   use Osysharp.Identity@0;
-  use Osysharp.OfferSales@0;
+  use Osysharp.OfferSales@1;
   use Osysharp.PrepaidCredits@0;
   tests "tests";
 }

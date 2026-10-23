@@ -141,7 +141,7 @@ public Purchase ConfirmPurchase(string reference, string token) {
   return Purchase.Single(x => x.Reference == reference);
 }
 
-/// The endpoint a provider posts its events to — the app declares the route (`/payments/{provider}/events`, as with
+/// The endpoint a provider posts its events to — the app declares the route (served at `/api/rest/v1/payments/{provider}/events`, as with
 /// Osysharp.Shop). The provider verifies its own event (a signature, or asking its API), so nothing past `HandleEvent`
 /// runs for a request it did not send; a paid event finds its purchase by reference.
 [AllowAnonymous]

@@ -106,3 +106,77 @@ them is in their copy of their data, kept with the books for as long as bookkeep
 
 [github.com/osysharp/offersales](https://github.com/osysharp/offersales). Its tests (`tests/`) are a small museum's: every
 behaviour above, each seam shown, the rules proved as each person, and the pages under `osy test --pixels`.
+
+## Examples
+
+Taken from this package's own tests, which compile and run on every release.
+
+```osy
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Workflow;
+using Osysharp.OfferSales;
+
+[Test(Museum)]
+[runas(Fia)]
+void the_desk_sells_for_cash_paid_at_once_and_sold_by_her() {
+  var p = SellAtCounter(Of("day"), Oli, "Cash", 2);
+  Assert.Equal(PurchaseState.Paid, p.State);
+  Assert.Equal(PurchaseChannel.Counter, p.Channel);
+  Assert.Equal("Cash", p.MethodLabel);
+  Assert.Equal(Fia.Id, p.SoldBy!.Id);
+  Assert.Equal(2500L, p.Amount);
+  Assert.Equal(1, HeardCount("paid"));
+}
+```
+
+From [`tests/counter.test.osy`](tests/counter.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.OfferSales;
+
+[Test(Museum)]
+[runas(Vera)]
+void places_run_out_and_the_refusal_says_how_many_are_left() {
+  StartPurchase(Of("tour-10"), "card", null, 2);
+  runas(Oli) {
+    Assert.Equal("Only 1 left of Guided tour, 10:00.",
+                 Assert.Throws<ValidationException>(() => StartPurchase(Of("tour-10"), "card", null, 2)).Message);
+    StartPurchase(Of("tour-10"), "card");
+    Assert.Equal("Guided tour, 10:00 is sold out.", Assert.Throws<ValidationException>(() => StartPurchase(Of("tour-10"), "card")).Message);
+  }
+  Assert.Equal(0, PlacesLeft(Of("tour-10")));
+}
+```
+
+From [`tests/limits.test.osy`](tests/limits.test.osy).
+
+```osy
+using Osysharp.Identity;
+using Osysharp.UserAccounts;
+using Osysharp.Payments;
+using Osysharp.Workflow;
+using Osysharp.OfferSales;
+
+[Test(Museum)]
+void only_ready_providers_that_take_the_currency_are_offered() {
+  var choices = PaymentChoices();
+  Assert.Equal(["card", "stubborn", "transfer"], choices.Select(c => c.Key).ToList());
+  Assert.True(choices[2].IsManual);
+}
+```
+
+From [`tests/online.test.osy`](tests/online.test.osy).
+
+## Learn more
+
+- [The Osysharp.OfferSales reference](https://osysharp.com/reference/ui/offer-sales-kit/)
+- [Osysharp.OfferSales in the package catalogue](https://osysharp.com/packages/#osysharp-offersales)
+- [The Osy# reference](https://osysharp.com/reference/) — the language, the runtime and every kit
+- [`llms-full.txt`](https://osysharp.com/llms-full.txt) — the whole reference and specification as one Markdown file, for a coding agent
+
+## Licence
+
+MIT — see [`LICENSE`](LICENSE).

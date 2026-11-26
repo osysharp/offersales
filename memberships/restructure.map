@@ -1,0 +1,5 @@
+# restructure.map — written by `osy restructure --apply`: old key -> new key, one line per moved declaration.
+# Read by the deploy and by repository checks that key by name. Keep it until the deployed move has passed them.
+Osysharp.OfferSales.Memberships.EndRefundedMembership -> Osysharp.OfferSales.Memberships.MembershipOffer.EndRefundedMembership
+Osysharp.OfferSales.Memberships.MembershipReference -> Osysharp.OfferSales.Memberships.MembershipOffer.MembershipReference
+Osysharp.OfferSales.Memberships.SellPaidMembership -> Osysharp.OfferSales.Memberships.MembershipOffer.SellPaidMembership

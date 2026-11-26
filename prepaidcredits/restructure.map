@@ -1,0 +1,5 @@
+# restructure.map — written by `osy restructure --apply`: old key -> new key, one line per moved declaration.
+# Read by the deploy and by repository checks that key by name. Keep it until the deployed move has passed them.
+Osysharp.OfferSales.PrepaidCredits.CreditPackReference -> Osysharp.OfferSales.PrepaidCredits.CreditPackOffer.CreditPackReference
+Osysharp.OfferSales.PrepaidCredits.GrantPaidCreditPack -> Osysharp.OfferSales.PrepaidCredits.CreditPackOffer.GrantPaidCreditPack
+Osysharp.OfferSales.PrepaidCredits.VoidRefundedCreditPack -> Osysharp.OfferSales.PrepaidCredits.CreditPackOffer.VoidRefundedCreditPack
